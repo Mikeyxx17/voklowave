@@ -1,4 +1,4 @@
-// 频道 REST API 处理器 — GET/POST /api/channels
+// 频道 REST API — GET /api/channels（列表）、POST /api/channels（创建）
 
 use crate::middleware::auth::AuthUser;
 use crate::models::{Channel, CreateChannelInput};
@@ -13,10 +13,11 @@ pub async fn get_channels(State(state): State<AppState>, user: AuthUser) -> Json
         .await
         .unwrap();
 
+    // 访客只能看到 general 频道
     if user.is_guest {
         let filtered_channels: Vec<Channel> = all_channels
             .into_iter()
-            .filter(|c| c.name == "general") // 只保留名字是 "general" 的频道
+            .filter(|c| c.name == "general")
             .collect();
         return Json(filtered_channels);
     }
@@ -29,24 +30,25 @@ pub async fn create_channel(
     user: AuthUser,
     Json(input): Json<CreateChannelInput>,
 ) -> impl IntoResponse {
-    // 🌟 核心防线：如果当前用户是访客，并且他尝试访问非 general 频道，直接返回 403
     if user.is_guest {
         return (StatusCode::FORBIDDEN, "访客模式下无法创建新频道").into_response();
     }
+
     let result = sqlx::query!(
         "INSERT INTO channels (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
         input.name
     )
     .execute(&state.db)
     .await;
+
     match result {
         Ok(_) => {
-            // 5. 频道创建成功后，别忘了动态在内存里为这个新频道开通一个广播通道
+            // 在内存中同步创建该频道的广播通道
             let (tx, _rx) = tokio::sync::broadcast::channel(100);
             state.channels.insert(input.name.clone(), tx);
 
             println!(
-                "用户 {} 创建频道 {} 成功。\n现在有 {} 个频道",
+                "用户 {} 创建频道 {} 成功，当前共 {} 个频道",
                 user.username,
                 input.name,
                 state.channels.len()

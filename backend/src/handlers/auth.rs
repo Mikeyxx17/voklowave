@@ -1,4 +1,4 @@
-// 用户认证处理器 — 注册、登录
+// 用户认证处理器 — 注册、登录、邮箱验证、访客登录
 
 use crate::middleware::auth::AuthUser;
 use crate::middleware::auth::Claims;
@@ -16,6 +16,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use rand::RngExt;
 use std::time::Duration;
 
+/// 异步发送验证码邮件，失败不阻塞注册流程
 fn send_verification_email(to_email: String, code: String) {
     tokio::spawn(async move {
         let smtp_server = std::env::var("SMTP_SERVER")
@@ -76,7 +77,7 @@ pub async fn register(
     State(state): State<AppState>,
     Json(input): Json<RegisterInput>,
 ) -> impl IntoResponse {
-    // === 第一道防线：邮箱域名白名单拦截 ===
+    // 邮箱域名白名单校验
     let parts: Vec<&str> = input.email.split('@').collect();
     let email_domain = match parts.get(1) {
         Some(domain) => *domain,
@@ -92,7 +93,7 @@ pub async fn register(
         return (StatusCode::FORBIDDEN, "该邮箱域名不在允许的注册白名单内").into_response();
     }
 
-    // === 第二步：输入长度校验 ===
+    // 输入长度校验
     if input.username.len() < 3 || input.username.len() > 30 {
         return (StatusCode::BAD_REQUEST, "用户名长度必须在 3 到 30 个字符之间").into_response();
     }
@@ -103,7 +104,6 @@ pub async fn register(
         return (StatusCode::BAD_REQUEST, "密码长度必须在 6 到 128 个字符之间").into_response();
     }
 
-    // === 第四步：加密密码与生成 6 位验证码 ===
     let hashed_password = match bcrypt::hash(&input.password, 10) {
         Ok(h) => h,
         Err(e) => {
@@ -112,19 +112,16 @@ pub async fn register(
         }
     };
 
-    // 生成 100000 到 999999 之间的随机数，并转成 String
     let verify_code = rand::rng().random_range(100000..1000000).to_string();
-    // 计算 15 分钟后的过期时间
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
 
-    // === 第五步：将所有数据一口气写入数据库 ===
     let result = sqlx::query!(
         "INSERT INTO users (username, email, password_hash, email_verify_token, token_expires_at) VALUES ($1, $2, $3, $4, $5)",
         input.username,
         input.email,
         hashed_password,
-        verify_code,    // 写入验证码
-        expires_at      // 写入过期时间
+        verify_code,
+        expires_at
     )
     .execute(&state.db)
     .await;
@@ -144,14 +141,13 @@ pub async fn register(
         }
     }
 }
-// 用户登录函数
+
 pub async fn login(
     State(state): State<AppState>,
     Json(input): Json<LoginInput>,
 ) -> impl IntoResponse {
     let user_result = sqlx::query_as!(
         User,
-        // 🌟 修复 1：在这里加入了 is_verified 字段，保证能顺利查出验证状态
         "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified FROM users WHERE email = $1",
         input.email
     )
@@ -163,7 +159,7 @@ pub async fn login(
             let password_ok = bcrypt::verify(&input.password, &user.password_hash).unwrap_or(false);
 
             if password_ok {
-                // 🌟 修复 2：在这里拦截。如果未验证，直接拒绝，不往下走
+                // 未验证邮箱的账号拒绝登录，引导用户前往验证页面
                 if !user.is_verified {
                     return (
                         StatusCode::FORBIDDEN,
@@ -172,7 +168,6 @@ pub async fn login(
                         .into_response();
                 }
 
-                // 验证通过，正常签发 JWT 通行证
                 let exp = (chrono::Utc::now() + chrono::Duration::days(7)).timestamp() as usize;
 
                 let my_claims = Claims {
@@ -201,8 +196,6 @@ pub async fn login(
                     }
                 };
 
-                // 🌟 修复 3：下方删除了你之前重复嵌套的 if password_ok 废代码
-
                 let response_body = AuthResponse {
                     token,
                     username: user.username,
@@ -210,7 +203,6 @@ pub async fn login(
                     avatar_url: user.avatar_url,
                 };
 
-                // 返回 200 OK 并附带 JSON 数据
                 (StatusCode::OK, Json(response_body)).into_response()
             } else {
                 (StatusCode::UNAUTHORIZED, "邮箱或密码错误").into_response()
@@ -239,7 +231,6 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
     let guest_username = format!("Guest_{}", &unique_id[..8]);
     let fake_password_hash = format!("g_hash_{}", unique_id);
 
-    // 1. 往数据库插入访客记录并拿到自动生成的 ID
     let user_row = sqlx::query!(
         "INSERT INTO users (username, email, password_hash, is_guest, is_verified) VALUES ($1, $2, $3, $4, true) RETURNING id",
         guest_username,
@@ -252,19 +243,16 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
 
     match user_row {
         Ok(row) => {
-            // 2. 计算过期时间（比如临时访客证只给 1 天有效期）
             let exp = (chrono::Utc::now() + chrono::Duration::days(1)).timestamp() as usize;
 
-            // 3. 构造 Claims 门票信息
             let my_claims = Claims {
-                sub: row.id, // 🌟 顺利拿到刚生成的访客 ID
+                sub: row.id,
                 email: guest_email,
                 username: guest_username.clone(),
                 is_guest: true,
                 exp,
             };
 
-            // 4. 读取防伪钢印密钥
             let secret_string = match std::env::var("JWT_SECRET") {
                 Ok(s) => s,
                 Err(_) => {
@@ -274,14 +262,13 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
             };
             let encoding_key = EncodingKey::from_secret(secret_string.as_bytes());
 
-            // 5. 签发 Token
             match encode(&Header::default(), &my_claims, &encoding_key) {
                 Ok(token) => {
                     let response_body = AuthResponse {
                         token,
                         username: guest_username,
-                        display_name: None, // 访客暂时没有自定义昵称
-                        avatar_url: None,   // 访客暂时没有头像
+                        display_name: None,
+                        avatar_url: None,
                     };
                     (StatusCode::OK, Json(response_body)).into_response()
                 }
@@ -318,7 +305,7 @@ pub async fn resend_verification(
             let now = chrono::Utc::now();
             let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
 
-            // 按天计数：如果上次重发不在今天，重置计数
+            // 按天重置计数
             let effective_count = match row.last_resend_at {
                 Some(last) if last >= today_start => row.resend_count,
                 _ => 0,
@@ -328,7 +315,7 @@ pub async fn resend_verification(
                 return (StatusCode::TOO_MANY_REQUESTS, "今日重发次数已用完（3 次），请明天再试").into_response();
             }
 
-            // 60 秒冷却：上次发的验证码还剩超过 14 分钟 → 说明 60 秒内刚发过
+            // 60 秒冷却：如果上次验证码还剩超过 14 分钟有效期，说明刚发不久
             if let Some(exp) = row.token_expires_at {
                 if exp > now + chrono::Duration::minutes(14) {
                     return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送").into_response();
@@ -371,7 +358,6 @@ pub async fn verify_email(
     State(state): State<AppState>,
     Json(input): Json<VerifyEmailInput>,
 ) -> impl IntoResponse {
-    // 1. 去数据库查找这个邮箱
     let user_row = sqlx::query!(
         "SELECT email_verify_token, token_expires_at, is_verified FROM users WHERE email = $1",
         input.email
@@ -381,12 +367,10 @@ pub async fn verify_email(
 
     match user_row {
         Ok(Some(user)) => {
-            // 如果已经验证过了，直接放行
             if user.is_verified {
                 return (StatusCode::BAD_REQUEST, "该账号已激活，无需重复验证").into_response();
             }
 
-            // 检查 Token 是否存在（以防万一）
             let saved_token = match user.email_verify_token {
                 Some(t) => t,
                 None => {
@@ -394,7 +378,6 @@ pub async fn verify_email(
                 }
             };
 
-            // 2. 严格核对验证码与时间是否超时
             let now = chrono::Utc::now();
             let is_expired = user.token_expires_at.map(|exp| now > exp).unwrap_or(true);
 
@@ -406,7 +389,6 @@ pub async fn verify_email(
                 return (StatusCode::UNAUTHORIZED, "验证码不正确").into_response();
             }
 
-            // 3. 通关成功！更改数据库状态，顺便把临时 token 清空
             match sqlx::query!(
                 "UPDATE users SET is_verified = true, email_verify_token = NULL, token_expires_at = NULL WHERE email = $1",
                 input.email
