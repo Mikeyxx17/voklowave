@@ -115,6 +115,56 @@
             </button>
           </template>
 
+          <template v-if="mode === 'verify'">
+            <div class="flex flex-col items-center w-full gap-4 py-2">
+              <div class="w-16 h-16 bg-success/10 rounded-full flex items-center justify-center mb-2 text-success">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
+                </svg>
+              </div>
+              <p class="text-sm text-base-content/70">验证码已发送至</p>
+              <p class="text-sm font-bold text-base-content">{{ verifyEmailAddr }}</p>
+
+              <div class="join w-full">
+                <input
+                  v-model="verifyCode"
+                  class="input input-bordered h-14 w-full bg-base-200/60 text-center text-2xl tracking-[0.5em] font-mono join-item"
+                  placeholder="000000"
+                  maxlength="6"
+                  @keyup.enter="doVerify"
+                />
+              </div>
+              <p v-if="verifyMsg" class="text-xs font-medium" :class="verifyOk ? 'text-success' : 'text-error'">{{ verifyMsg }}</p>
+
+              <button
+                class="btn btn-success h-12 w-full text-base rounded-field"
+                :disabled="verifyCode.length !== 6 || verifyLoading"
+                @click="doVerify"
+              >
+                <span v-if="verifyLoading" class="loading loading-spinner loading-sm"></span>
+                <span v-else>激活账号</span>
+              </button>
+
+              <div class="flex items-center gap-1 text-xs text-base-content/50">
+                <span>没有收到邮件？</span>
+                <button
+                  class="btn btn-link btn-xs text-primary p-0 h-auto min-h-0 underline underline-offset-2"
+                  :disabled="resendLoading || resendCooldown > 0"
+                  @click="doResend"
+                >
+                  <span v-if="resendLoading" class="loading loading-spinner loading-xs"></span>
+                  <span v-else-if="resendCooldown > 0">重新发送 ({{ resendCooldown }}s)</span>
+                  <span v-else>重新发送</span>
+                </button>
+              </div>
+
+              <button
+                class="btn btn-ghost btn-sm text-base-content/40"
+                @click="switchMode('login'); clearVerify()"
+              >返回登录</button>
+            </div>
+          </template>
+
           <template v-if="mode === 'quick'">
             <div class="flex flex-col items-center justify-center w-full py-4">
               <div class="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 text-primary">
@@ -180,8 +230,8 @@
 import { ref, computed } from 'vue'
 import { useAppState } from '../composables/useAppState'
 
-// 注意这里解构出了 quickExperience
-const { login, register, theme, authError, quickExperience } = useAppState()
+// 注意这里解构出了 quickExperience 和验证相关方法
+const { login, register, verifyEmail, resendVerification, theme, authError, pendingEmail, quickExperience } = useAppState()
 
 const mode = ref('login')
 const authLoading = ref(false)
@@ -193,7 +243,10 @@ const loginPassword = ref('')
 const doLogin = async () => {
   if (!loginEmail.value.trim() || !loginPassword.value) return
   authLoading.value = true
-  await login(loginEmail.value.trim(), loginPassword.value)
+  const result = await login(loginEmail.value.trim(), loginPassword.value)
+  if (result.needVerify) {
+    mode.value = 'verify'
+  }
   authLoading.value = false
 }
 
@@ -207,10 +260,83 @@ const doRegister = async () => {
   authLoading.value = true
   const result = await register(regUsername.value.trim(), regEmail.value.trim(), regPassword.value)
   if (result.ok) {
-    // 注册成功后自动登录
-    await login(regEmail.value.trim(), regPassword.value)
+    pendingEmail.value = regEmail.value.trim()
+    mode.value = 'verify'
+    clearVerify()
+    startResendCooldown()
   }
   authLoading.value = false
+}
+
+// ── 验证码 ──
+const verifyCode = ref('')
+const verifyLoading = ref(false)
+const verifyMsg = ref('')
+const verifyOk = ref(false)
+const verifyEmailAddr = computed(() => pendingEmail.value)
+
+const clearVerify = () => {
+  verifyCode.value = ''
+  verifyMsg.value = ''
+  verifyOk.value = false
+  resendCooldown.value = 0
+  clearInterval(resendCooldownTimer)
+  resendCooldownTimer = null
+}
+
+const doVerify = async () => {
+  if (verifyCode.value.length !== 6) return
+  verifyLoading.value = true
+  verifyMsg.value = ''
+  const result = await verifyEmail(pendingEmail.value, verifyCode.value)
+  if (result.ok) {
+    verifyOk.value = true
+    verifyMsg.value = result.message
+    // 2 秒后返回登录页
+    setTimeout(() => {
+      switchMode('login')
+      loginEmail.value = pendingEmail.value
+      pendingEmail.value = ''
+      clearVerify()
+    }, 2000)
+  } else {
+    verifyOk.value = false
+    verifyMsg.value = result.error
+  }
+  verifyLoading.value = false
+}
+
+// ── 重新发送验证码 ──
+const resendLoading = ref(false)
+const resendCooldown = ref(0)
+let resendCooldownTimer = null
+
+const startResendCooldown = () => {
+  resendCooldown.value = 60
+  clearInterval(resendCooldownTimer)
+  resendCooldownTimer = setInterval(() => {
+    resendCooldown.value--
+    if (resendCooldown.value <= 0) {
+      clearInterval(resendCooldownTimer)
+      resendCooldownTimer = null
+    }
+  }, 1000)
+}
+
+const doResend = async () => {
+  if (!pendingEmail.value || resendLoading.value || resendCooldown.value > 0) return
+  resendLoading.value = true
+  verifyMsg.value = ''
+  const result = await resendVerification(pendingEmail.value)
+  if (result.ok) {
+    verifyOk.value = true
+    verifyMsg.value = result.message
+    startResendCooldown()
+  } else {
+    verifyOk.value = false
+    verifyMsg.value = result.error
+  }
+  resendLoading.value = false
 }
 
 // ── 快速体验（调用后端 API 版）──
@@ -223,6 +349,10 @@ const handleQuickJoin = async () => {
 const switchMode = (key) => {
   mode.value = key
   authError.value = ''
+  if (key !== 'verify') {
+    clearVerify()
+    pendingEmail.value = ''
+  }
 }
 
 const selectTheme = (value) => {

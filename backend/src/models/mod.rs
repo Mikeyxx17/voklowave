@@ -6,4 +6,4 @@ pub mod user;
 
 pub use channel::{Channel, CreateChannelInput};
 pub use message::ChatMessage;
-pub use user::{AuthResponse, LoginInput, MeResponse, RegisterInput, User};
+pub use user::{AuthResponse, LoginInput, MeResponse, RegisterInput, ResendVerifyInput, User, VerifyEmailInput};

@@ -1,9 +1,9 @@
 // 后端服务入口 — 启动引导、路由注册、服务器绑定
 
-mod middleware;
-mod services;
 mod handlers;
+mod middleware;
 mod models;
+mod services;
 mod state;
 use axum::{
     Router,
@@ -12,7 +12,8 @@ use axum::{
 use dashmap::DashMap;
 use dotenvy::dotenv;
 use handlers::{
-    create_channel, get_channels, get_current_user, guest_login, login, register, ws_handler,
+    create_channel, get_channels, get_current_user, guest_login, login, register,
+    resend_verification, verify_email, ws_handler,
 };
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
@@ -77,6 +78,8 @@ async fn main() {
         .route("/api/channels", get(get_channels).post(create_channel))
         .route("/api/login", post(login))
         .route("/api/register", post(register))
+        .route("/api/verify_email", post(verify_email))
+        .route("/api/resend_verification", post(resend_verification))
         .route("/api/guest_login", post(guest_login))
         .route("/api/me", get(get_current_user))
         .layer(cors)

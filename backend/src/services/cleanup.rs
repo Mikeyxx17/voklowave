@@ -27,25 +27,27 @@ pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours:
             };
 
             // 1. 第一步：删消息
-            let msg_query = format!(
+            let max_hours = max_age_hours as i64;
+
+            let msg_result = sqlx::query(
                 "DELETE FROM messages USING users \
                 WHERE messages.username = users.username \
                 AND users.is_guest = true \
-                AND (users.created_at AT TIME ZONE 'UTC') < (NOW() AT TIME ZONE 'UTC') - INTERVAL '{} hours'",
-                max_age_hours
-            );
-
-            let msg_result = sqlx::query(&msg_query).execute(&mut *tx).await;
+                AND users.created_at < NOW() - ($1 || ' hours')::INTERVAL"
+            )
+            .bind(max_hours)
+            .execute(&mut *tx)
+            .await;
 
             // 2. 第二步：删账号
-            let user_query = format!(
+            let user_result = sqlx::query(
                 "DELETE FROM users \
                 WHERE is_guest = true \
-                AND (created_at AT TIME ZONE 'UTC') < (NOW() AT TIME ZONE 'UTC') - INTERVAL '{} hours'",
-                max_age_hours
-            );
-
-            let user_result = sqlx::query(&user_query).execute(&mut *tx).await;
+                AND created_at < NOW() - ($1 || ' hours')::INTERVAL"
+            )
+            .bind(max_hours)
+            .execute(&mut *tx)
+            .await;
 
             // 4. 检查两步执行结果，决定提交还是回滚
             match (msg_result, user_result) {

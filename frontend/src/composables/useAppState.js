@@ -10,6 +10,7 @@ const theme = ref(localStorage.getItem('voklowave-theme') || 'dark')
 const showCreateModal = ref(false)
 const authError = ref('')
 const initializing = ref(true)
+const pendingEmail = ref('')   // 记住需要验证的邮箱，方便登录后取值
 
 const isGuest = computed(() => username.value.startsWith('Guest_'))
 
@@ -104,6 +105,11 @@ export function useAppState() {
         isJoined.value = true
         return { ok: true }
       }
+      const body = await res.text()
+      if (res.status === 403 && body.includes('尚未通过邮箱验证')) {
+        pendingEmail.value = loginEmail
+        return { ok: false, needVerify: true, error: body }
+      }
       if (res.status === 401) {
         authError.value = '邮箱或密码错误'
         return { ok: false, error: '邮箱或密码错误' }
@@ -113,6 +119,44 @@ export function useAppState() {
     } catch {
       authError.value = '网络错误，请检查连接'
       return { ok: false, error: '网络错误' }
+    }
+  }
+
+  // ── 邮箱验证 ──
+  const verifyEmail = async (targetEmail, code) => {
+    authError.value = ''
+    try {
+      const res = await fetch('/api/verify_email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail, code }),
+      })
+      const body = await res.text()
+      if (res.ok) {
+        return { ok: true, message: body }
+      }
+      return { ok: false, error: body }
+    } catch {
+      return { ok: false, error: '网络错误，请检查连接' }
+    }
+  }
+
+  // ── 重新发送验证码 ──
+  const resendVerification = async (targetEmail) => {
+    authError.value = ''
+    try {
+      const res = await fetch('/api/resend_verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail }),
+      })
+      const body = await res.text()
+      if (res.ok) {
+        return { ok: true, message: body }
+      }
+      return { ok: false, error: body }
+    } catch {
+      return { ok: false, error: '网络错误，请检查连接' }
     }
   }
 
@@ -180,11 +224,14 @@ export function useAppState() {
     authError,
     initializing,
     isGuest,
+    pendingEmail,
     login,
     register,
+    verifyEmail,
+    resendVerification,
     join,
     logout,
     switchChannel,
-    quickExperience // 已经导出
+    quickExperience
   }
 }

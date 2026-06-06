@@ -21,6 +21,7 @@ pub struct User {
     pub bio: Option<String>,          //个性签名
     pub is_guest: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    pub is_verified: bool,
 }
 
 // 3. 登录接口接收的请求体
@@ -43,5 +44,16 @@ pub struct AuthResponse {
 pub struct MeResponse {
     pub id: i32,
     pub username: String,
+    pub email: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct VerifyEmailInput {
+    pub email: String,
+    pub code: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ResendVerifyInput {
     pub email: String,
 }

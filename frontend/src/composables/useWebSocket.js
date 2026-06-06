@@ -11,7 +11,7 @@ let retryTimer = null
 let heartbeatTimer = null
 let manualDisconnect = false
 
-const { currentChannel, isJoined } = useAppState()
+const { currentChannel, isJoined, token } = useAppState()
 const { fetchChannels } = useChannels()
 
 const clearTimers = () => {
@@ -61,7 +61,8 @@ const connect = () => {
   }
 
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = protocol + '//' + location.host + '/ws/' + currentChannel.value
+  const tok = token.value || sessionStorage.getItem('voklowave-token') || ''
+  const url = protocol + '//' + location.host + '/ws/' + currentChannel.value + '?token=' + encodeURIComponent(tok)
   const ws = new WebSocket(url)
   socket = ws
   manualDisconnect = false
