@@ -1,0 +1,66 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: dark --default, light, cyberpunk, cupcake, synthwave, nord, sunset, winter, coffee, lemonade, luxury, business, autumn, dim;
+}
+
+/* ── 自定义滚动条 ── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(var(--b3));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(var(--bc) / 0.25);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(var(--b3)) transparent;
+}
+
+/* ── 选中文本：醒目的主题色高亮 ── */
+::selection {
+  background: oklch(var(--p) / 0.35);
+  color: oklch(var(--pc));
+  text-shadow: 0 0 2px oklch(var(--p) / 0.3);
+}
+
+/* 消息气泡内的选中效果更突出 */
+.chat-bubble ::selection,
+.chat-bubble::selection {
+  background: oklch(var(--p) / 0.45);
+  color: #fff;
+  border-radius: 3px;
+}
+
+/* Firefox 兼容 */
+::-moz-selection {
+  background: oklch(var(--p) / 0.35);
+  color: oklch(var(--pc));
+  text-shadow: 0 0 2px oklch(var(--p) / 0.3);
+}
+.chat-bubble ::-moz-selection,
+.chat-bubble::-moz-selection {
+  background: oklch(var(--p) / 0.45);
+  color: #fff;
+}
+
+/* ── 消息气泡增强 ── */
+.chat-bubble {
+  box-shadow: 0 1px 4px oklch(var(--b3) / 0.6);
+}
+
+/* ── 输入框聚焦光晕 ── */
+.input:focus-within {
+  box-shadow: 0 0 0 3px oklch(var(--p) / 0.12);
+}
+
+/* ── 按钮点击反馈 ── */
+.btn:active {
+  transform: scale(0.97);
+}
