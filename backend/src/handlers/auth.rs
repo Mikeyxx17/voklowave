@@ -124,18 +124,26 @@ pub async fn register(
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
 
     let result = sqlx::query!(
-        "INSERT INTO users (username, email, password_hash, email_verify_token, token_expires_at) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)",
         input.username,
         input.email,
         hashed_password,
-        verify_code,
-        expires_at
     )
     .execute(&state.db)
     .await;
 
     match result {
         Ok(_) => {
+            // 验证码写入独立表
+            let _ = sqlx::query!(
+                "INSERT INTO verification_codes (email, code, purpose, expires_at) VALUES ($1, $2, 'email_verify', $3)",
+                input.email,
+                verify_code,
+                expires_at
+            )
+            .execute(&state.db)
+            .await;
+
             send_verification_email(input.email.clone(), verify_code);
             (
                 StatusCode::CREATED,
@@ -237,8 +245,9 @@ pub async fn get_current_user(user: AuthUser) -> impl IntoResponse {
 
 pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
     let unique_id = uuid::Uuid::new_v4().to_string();
-    let guest_email = format!("guest_{}@temp.local", unique_id);
-    let guest_username = format!("Guest_{}", &unique_id[..8]);
+    let short_id = &unique_id[..8];
+    let guest_email = format!("guest_{}@temp.local", short_id);
+    let guest_username = format!("Guest_{}", short_id);
     let fake_password_hash = format!("g_hash_{}", unique_id);
 
     let user_row = sqlx::query!(
@@ -301,73 +310,91 @@ pub async fn resend_verification(
     State(state): State<AppState>,
     Json(input): Json<ResendVerifyInput>,
 ) -> impl IntoResponse {
+    // 先确认用户存在且未激活
     let user_row = sqlx::query!(
-        "SELECT is_verified, resend_count, last_resend_at, token_expires_at FROM users WHERE email = $1",
+        "SELECT is_verified FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
     .await;
 
     match user_row {
-        Ok(Some(row)) => {
-            if row.is_verified {
+        Ok(Some(user)) => {
+            if user.is_verified {
                 return (StatusCode::BAD_REQUEST, "该账号已激活，无需重复发送验证码")
                     .into_response();
             }
-
-            let now = chrono::Utc::now();
-            let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
-
-            // 按天重置计数
-            let effective_count = match row.last_resend_at {
-                Some(last) if last >= today_start => row.resend_count,
-                _ => 0,
-            };
-
-            if effective_count >= 3 {
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "今日重发次数已用完（3 次），请明天再试",
-                )
-                    .into_response();
-            }
-
-            // 60 秒冷却：如果上次验证码还剩超过 14 分钟有效期，说明刚发不久
-            if let Some(exp) = row.token_expires_at {
-                if exp > now + chrono::Duration::minutes(14) {
-                    return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送")
-                        .into_response();
-                }
-            }
-
-            let new_code = rand::rng().random_range(100000..1000000).to_string();
-            let new_expires_at = now + chrono::Duration::minutes(15);
-
-            match sqlx::query!(
-                "UPDATE users SET email_verify_token = $1, token_expires_at = $2, resend_count = $3, last_resend_at = $4 WHERE email = $5",
-                new_code,
-                new_expires_at,
-                effective_count + 1,
-                now,
-                input.email
-            )
-            .execute(&state.db)
-            .await
-            {
-                Ok(_) => {
-                    send_verification_email(input.email.clone(), new_code);
-                    (StatusCode::OK, "验证码已重新发送，请查收邮箱").into_response()
-                }
-                Err(e) => {
-                    println!("重新发送验证码数据库更新失败: {:?}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "操作失败，请稍后重试").into_response()
-                }
-            }
         }
-        Ok(None) => (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
+        Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
             println!("查询用户失败: {:?}", e);
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    // 查询该邮箱的验证码记录
+    let vc_row = sqlx::query!(
+        "SELECT code, expires_at, resend_count, last_resend_at FROM verification_codes WHERE email = $1 AND purpose = 'email_verify'",
+        input.email
+    )
+    .fetch_optional(&state.db)
+    .await;
+
+    let now = chrono::Utc::now();
+    let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
+
+    let effective_count = match vc_row {
+        Ok(Some(ref row)) => {
+            match row.last_resend_at {
+                Some(last) if last >= today_start => row.resend_count,
+                _ => 0,
+            }
+        }
+        _ => 0,
+    };
+
+    if effective_count >= 3 {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "今日重发次数已用完（3 次），请明天再试",
+        )
+            .into_response();
+    }
+
+    // 60 秒冷却
+    if let Ok(Some(ref row)) = vc_row {
+        if row.expires_at > now + chrono::Duration::minutes(14) {
+            return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送")
+                .into_response();
+        }
+    }
+
+    let new_code = rand::rng().random_range(100000..1000000).to_string();
+    let new_expires_at = now + chrono::Duration::minutes(15);
+
+    // UPSERT：有则更新，无则插入
+    let upsert_result = sqlx::query!(
+        "INSERT INTO verification_codes (email, code, purpose, expires_at, resend_count, last_resend_at) \
+         VALUES ($1, $2, 'email_verify', $3, $4, $5) \
+         ON CONFLICT (email, purpose) \
+         DO UPDATE SET code = $2, expires_at = $3, resend_count = $4, last_resend_at = $5",
+        input.email,
+        new_code,
+        new_expires_at,
+        effective_count + 1,
+        now
+    )
+    .execute(&state.db)
+    .await;
+
+    match upsert_result {
+        Ok(_) => {
+            send_verification_email(input.email.clone(), new_code);
+            (StatusCode::OK, "验证码已重新发送，请查收邮箱").into_response()
+        }
+        Err(e) => {
+            println!("重新发送验证码数据库更新失败: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "操作失败，请稍后重试").into_response()
         }
     }
 }
@@ -376,8 +403,9 @@ pub async fn verify_email(
     State(state): State<AppState>,
     Json(input): Json<VerifyEmailInput>,
 ) -> impl IntoResponse {
+    // 检查用户是否存在且未激活
     let user_row = sqlx::query!(
-        "SELECT email_verify_token, token_expires_at, is_verified FROM users WHERE email = $1",
+        "SELECT is_verified FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
@@ -388,42 +416,73 @@ pub async fn verify_email(
             if user.is_verified {
                 return (StatusCode::BAD_REQUEST, "该账号已激活，无需重复验证").into_response();
             }
-
-            let saved_token = match user.email_verify_token {
-                Some(t) => t,
-                None => {
-                    return (StatusCode::BAD_REQUEST, "验证码不存在，请重新注册").into_response();
-                }
-            };
-
-            let now = chrono::Utc::now();
-            let is_expired = user.token_expires_at.map(|exp| now > exp).unwrap_or(true);
-
-            if is_expired {
-                return (StatusCode::BAD_REQUEST, "验证码已过期，请尝试重新发送").into_response();
-            }
-
-            if saved_token != input.code {
-                return (StatusCode::UNAUTHORIZED, "验证码不正确").into_response();
-            }
-
-            match sqlx::query!(
-                "UPDATE users SET is_verified = true, email_verify_token = NULL, token_expires_at = NULL WHERE email = $1",
-                input.email
-            )
-            .execute(&state.db)
-            .await
-            {
-                Ok(_) => (StatusCode::OK, "账号激活成功！现在您可以正常登录了").into_response(),
-                Err(e) => {
-                    println!("激活账号数据库更新失败: {:?}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "激活失败，请稍后重试").into_response()
-                }
-            }
         }
-        Ok(None) => (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
+        Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
             println!("查询验证状态失败: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    // 从验证码表取出 code 和过期时间
+    let vc_row = sqlx::query!(
+        "SELECT code, expires_at FROM verification_codes WHERE email = $1 AND purpose = 'email_verify'",
+        input.email
+    )
+    .fetch_optional(&state.db)
+    .await;
+
+    let vc = match vc_row {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::BAD_REQUEST, "验证码不存在，请重新注册").into_response(),
+        Err(e) => {
+            println!("查询验证码失败: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let now = chrono::Utc::now();
+    if now > vc.expires_at {
+        return (StatusCode::BAD_REQUEST, "验证码已过期，请尝试重新发送").into_response();
+    }
+
+    if vc.code != input.code {
+        return (StatusCode::UNAUTHORIZED, "验证码不正确").into_response();
+    }
+
+    // 激活账号并清除验证码记录
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            println!("开启事务失败: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "激活失败，请稍后重试").into_response();
+        }
+    };
+
+    let user_update = sqlx::query!(
+        "UPDATE users SET is_verified = true WHERE email = $1",
+        input.email
+    )
+    .execute(&mut *tx)
+    .await;
+
+    let vc_delete = sqlx::query!(
+        "DELETE FROM verification_codes WHERE email = $1 AND purpose = 'email_verify'",
+        input.email
+    )
+    .execute(&mut *tx)
+    .await;
+
+    match (user_update, vc_delete) {
+        (Ok(_), Ok(_)) => {
+            if let Err(e) = tx.commit().await {
+                println!("提交事务失败: {:?}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "激活失败，请稍后重试").into_response();
+            }
+            (StatusCode::OK, "账号激活成功！现在您可以正常登录了").into_response()
+        }
+        (err_user, err_vc) => {
+            println!("激活失败，user_update: {:?}, vc_delete: {:?}", err_user, err_vc);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

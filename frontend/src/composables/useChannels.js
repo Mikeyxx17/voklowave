@@ -1,11 +1,18 @@
 import { ref } from 'vue'
 import { useAppState } from './useAppState'
 
-// ── 全局单例状态 ──
+// 模块级全局单例
 const channels = ref([])
 const loading = ref(false)
 
+/**
+ * 频道列表管理。
+ *
+ * 模块级 ref 保证多个组件看到的频道列表是同一份数据。
+ */
 export function useChannels() {
+
+  /** 从后端拉取频道列表，访客仅获得 general */
   const fetchChannels = async () => {
     loading.value = true
     try {
@@ -25,11 +32,10 @@ export function useChannels() {
     }
   }
 
+  /** 创建新频道，访客禁止创建 */
   const createChannel = async (name) => {
-    // 1. 从 useAppState 中把 token 和我们新写的 isGuest 都解构出来 
     const { token, isGuest } = useAppState()
 
-    // 2. 🌟 前端铁面防线：如果是访客，直接拦截，不发送网络请求，返回 false
     if (isGuest.value) {
       console.warn('访客模式下无法创建新频道')
       return false

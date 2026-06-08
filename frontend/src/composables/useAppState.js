@@ -1,6 +1,6 @@
 import { computed, ref, watch } from 'vue'
 
-// ── 全局单例状态 ──
+// ── 模块级全局单例（所有组件共享同一份状态） ──
 const username = ref('')
 const email = ref('')
 const token = ref(sessionStorage.getItem('voklowave-token') || '')
@@ -10,17 +10,18 @@ const theme = ref(localStorage.getItem('voklowave-theme') || 'dark')
 const showCreateModal = ref(false)
 const authError = ref('')
 const initializing = ref(true)
-const pendingEmail = ref('')   // 记住需要验证的邮箱，方便登录后取值
+const pendingEmail = ref('')
 
+// 是否为访客账号
 const isGuest = computed(() => username.value.startsWith('Guest_'))
 
-// 主题持久化 + 应用到 <html>
+// 主题变更 → localStorage + <html data-theme>
 watch(theme, (val) => {
   localStorage.setItem('voklowave-theme', val)
   document.documentElement.setAttribute('data-theme', val)
 }, { immediate: true })
 
-// token 持久化
+// token 变更 → sessionStorage
 watch(token, (val) => {
   if (val) {
     sessionStorage.setItem('voklowave-token', val)
@@ -29,12 +30,12 @@ watch(token, (val) => {
   }
 })
 
-// 当前频道持久化
+// 当前频道变更 → sessionStorage
 watch(currentChannel, (val) => {
   sessionStorage.setItem('voklowave-channel', val)
 })
 
-// ── 启动时尝试恢复会话 ──
+// 页面加载时尝试用 sessionStorage 中的 token 恢复会话
 const initAuth = async () => {
   const saved = sessionStorage.getItem('voklowave-token')
   if (!saved) {
@@ -56,15 +57,25 @@ const initAuth = async () => {
       token.value = ''
     }
   } catch {
-    // 网络不通时不清除 token，下次刷新再试
+    // 网络不通时保留 token，刷新页面后重试
   }
   initializing.value = false
 }
 
 initAuth()
 
+/**
+ * 全局认证与设置状态管理
+ *
+ * 模块级 ref 保证跨组件共享一份数据，无需 provide/inject。
+ * 提供 login / register / verifyEmail / guest / logout 等方法。
+ */
 export function useAppState() {
-  // ── 注册 ──
+
+  /**
+   * 注册新账号。
+   * 成功后后端会发送验证邮件，前端切换到验证码输入界面。
+   */
   const register = async (regUsername, regEmail, password) => {
     authError.value = ''
     try {
@@ -85,7 +96,10 @@ export function useAppState() {
     }
   }
 
-  // ── 登录 ──
+  /**
+   * 邮箱 + 密码登录。
+   * 未验证邮箱的账号会返回 needVerify，引导至验证界面。
+   */
   const login = async (loginEmail, password) => {
     authError.value = ''
     try {
@@ -115,7 +129,7 @@ export function useAppState() {
     }
   }
 
-  // ── 邮箱验证 ──
+  /** 提交 6 位验证码激活账号 */
   const verifyEmail = async (targetEmail, code) => {
     authError.value = ''
     try {
@@ -134,7 +148,7 @@ export function useAppState() {
     }
   }
 
-  // ── 重新发送验证码 ──
+  /** 重新发送验证邮件（每日 3 次，60s 冷却） */
   const resendVerification = async (targetEmail) => {
     authError.value = ''
     try {
@@ -153,7 +167,7 @@ export function useAppState() {
     }
   }
 
-  // ── 快速体验（原本地保留版本，按需可删）──
+  /** （旧版）纯本地快速加入，不走后端认证 */
   const join = (name) => {
     username.value = name.trim()
     if (username.value) {
@@ -163,11 +177,10 @@ export function useAppState() {
     }
   }
 
-  // ── 快速体验（连接后端API新版）──
+  /** 快速体验：调用后端访客接口，获得临时 JWT */
   const quickExperience = async () => {
     authError.value = ''
     try {
-      // 调用后端游客专用接口
       const res = await fetch('/api/guest_login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -175,12 +188,8 @@ export function useAppState() {
 
       if (res.ok) {
         const data = await res.json()
-
-        // 像登录成功一样同步状态
         token.value = data.token
         username.value = data.username
-
-        // 标记已加入聊天
         isJoined.value = true
         return { ok: true }
       } else {
@@ -193,7 +202,7 @@ export function useAppState() {
     }
   }
 
-  // ── 登出 ──
+  /** 登出：清除全部状态回到登录页 */
   const logout = () => {
     token.value = ''
     username.value = ''
@@ -202,6 +211,7 @@ export function useAppState() {
     currentChannel.value = 'general'
   }
 
+  /** 切换当前频道 */
   const switchChannel = (channel) => {
     currentChannel.value = channel
   }
