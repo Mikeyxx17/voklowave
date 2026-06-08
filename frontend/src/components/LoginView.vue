@@ -84,13 +84,24 @@
               <label class="label pb-1.5">
                 <span class="label-text text-base-content/60 text-xs font-semibold uppercase tracking-wider">邮箱</span>
               </label>
-              <input
-                v-model="regEmail"
-                class="input input-bordered h-12 w-full bg-base-200/60"
-                placeholder="请输入邮箱"
-                type="email"
-                @keyup.enter="doRegister"
-              />
+              <div class="join w-full">
+                <input
+                  v-model="regEmailLocal"
+                  class="input input-bordered h-12 join-item bg-base-200/60"
+                  style="width:50%"
+                  placeholder="邮箱前缀"
+                  @keyup.enter="doRegister"
+                />
+                <span class="join-item flex items-center px-2 bg-base-200/60 text-base-content/40 text-sm border-y border-base-300">@</span>
+                <select
+                  v-model="regEmailDomain"
+                  class="select select-bordered h-12 join-item bg-base-200/60 text-sm"
+                  style="width:50%"
+                >
+                  <option value="" disabled>选择邮箱</option>
+                  <option v-for="d in emailDomains" :key="d" :value="d">{{ d }}</option>
+                </select>
+              </div>
             </div>
             <div class="form-control w-full">
               <label class="label pb-1.5">
@@ -106,8 +117,8 @@
             </div>
             <button
               class="btn btn-secondary h-12 w-full text-base rounded-field"
-              :class="regUsername.trim() && regEmail.trim() && regPassword ? 'hover:scale-[1.02]' : ''"
-              :disabled="!regUsername.trim() || !regEmail.trim() || !regPassword || authLoading"
+              :class="regUsername.trim() && regEmail && regPassword ? 'hover:scale-[1.02]' : ''"
+              :disabled="!regUsername.trim() || !regEmail || !regPassword || authLoading"
               @click="doRegister"
             >
               <span v-if="authLoading" class="loading loading-spinner loading-sm"></span>
@@ -252,15 +263,23 @@ const doLogin = async () => {
 
 // ── 注册表单 ──
 const regUsername = ref('')
-const regEmail = ref('')
+const regEmailLocal = ref('')
+const regEmailDomain = ref('')
 const regPassword = ref('')
 
+const emailDomains = ['qq.com', 'gmail.com', 'outlook.com', 'proton.me', 'protonmail.com', '126.com', 'yeah.net', '163.com']
+
+const regEmail = computed(() => {
+  if (!regEmailLocal.value.trim() || !regEmailDomain.value) return ''
+  return regEmailLocal.value.trim() + '@' + regEmailDomain.value
+})
+
 const doRegister = async () => {
-  if (!regUsername.value.trim() || !regEmail.value.trim() || !regPassword.value) return
+  if (!regUsername.value.trim() || !regEmail.value || !regPassword.value) return
   authLoading.value = true
-  const result = await register(regUsername.value.trim(), regEmail.value.trim(), regPassword.value)
+  const result = await register(regUsername.value.trim(), regEmail.value, regPassword.value)
   if (result.ok) {
-    pendingEmail.value = regEmail.value.trim()
+    pendingEmail.value = regEmail.value
     mode.value = 'verify'
     clearVerify()
     startResendCooldown()

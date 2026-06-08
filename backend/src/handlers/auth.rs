@@ -19,8 +19,8 @@ use std::time::Duration;
 /// 异步发送验证码邮件，失败不阻塞注册流程
 fn send_verification_email(to_email: String, code: String) {
     tokio::spawn(async move {
-        let smtp_server = std::env::var("SMTP_SERVER")
-            .unwrap_or_else(|_| "smtp.office365.com".to_string());
+        let smtp_server =
+            std::env::var("SMTP_SERVER").unwrap_or_else(|_| "smtp.qq.com".to_string());
         let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
         let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
 
@@ -95,13 +95,21 @@ pub async fn register(
 
     // 输入长度校验
     if input.username.len() < 3 || input.username.len() > 30 {
-        return (StatusCode::BAD_REQUEST, "用户名长度必须在 3 到 30 个字符之间").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "用户名长度必须在 3 到 30 个字符之间",
+        )
+            .into_response();
     }
     if input.email.len() > 254 {
         return (StatusCode::BAD_REQUEST, "邮箱地址过长").into_response();
     }
     if input.password.len() < 6 || input.password.len() > 128 {
-        return (StatusCode::BAD_REQUEST, "密码长度必须在 6 到 128 个字符之间").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "密码长度必须在 6 到 128 个字符之间",
+        )
+            .into_response();
     }
 
     let hashed_password = match bcrypt::hash(&input.password, 10) {
@@ -181,7 +189,9 @@ pub async fn login(
                 let secret_string = match std::env::var("JWT_SECRET") {
                     Ok(s) => s,
                     Err(_) => {
-                        eprintln!("⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。");
+                        eprintln!(
+                            "⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。"
+                        );
                         "development_fallback_secret_key_look_out".to_string()
                     }
                 };
@@ -208,7 +218,7 @@ pub async fn login(
                 (StatusCode::UNAUTHORIZED, "邮箱或密码错误").into_response()
             }
         }
-        Ok(None) => (StatusCode::UNAUTHORIZED, "邮箱或密码错误").into_response(),
+        Ok(None) => (StatusCode::UNAUTHORIZED, "账户未注册").into_response(),
         Err(e) => {
             println!("登录查询数据库失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -256,7 +266,9 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
             let secret_string = match std::env::var("JWT_SECRET") {
                 Ok(s) => s,
                 Err(_) => {
-                    eprintln!("⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。");
+                    eprintln!(
+                        "⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。"
+                    );
                     "development_fallback_secret_key_look_out".to_string()
                 }
             };
@@ -299,7 +311,8 @@ pub async fn resend_verification(
     match user_row {
         Ok(Some(row)) => {
             if row.is_verified {
-                return (StatusCode::BAD_REQUEST, "该账号已激活，无需重复发送验证码").into_response();
+                return (StatusCode::BAD_REQUEST, "该账号已激活，无需重复发送验证码")
+                    .into_response();
             }
 
             let now = chrono::Utc::now();
@@ -312,13 +325,18 @@ pub async fn resend_verification(
             };
 
             if effective_count >= 3 {
-                return (StatusCode::TOO_MANY_REQUESTS, "今日重发次数已用完（3 次），请明天再试").into_response();
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "今日重发次数已用完（3 次），请明天再试",
+                )
+                    .into_response();
             }
 
             // 60 秒冷却：如果上次验证码还剩超过 14 分钟有效期，说明刚发不久
             if let Some(exp) = row.token_expires_at {
                 if exp > now + chrono::Duration::minutes(14) {
-                    return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送").into_response();
+                    return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送")
+                        .into_response();
                 }
             }
 

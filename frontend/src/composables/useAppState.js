@@ -76,12 +76,9 @@ export function useAppState() {
       if (res.status === 201) {
         return { ok: true }
       }
-      if (res.status === 409) {
-        authError.value = '用户名或邮箱已被注册'
-        return { ok: false, error: '用户名或邮箱已被注册' }
-      }
-      authError.value = '注册失败，请稍后重试'
-      return { ok: false, error: '注册失败' }
+      const body = await res.text()
+      authError.value = body || '注册失败，请稍后重试'
+      return { ok: false, error: body || '注册失败' }
     } catch {
       authError.value = '网络错误，请检查连接'
       return { ok: false, error: '网络错误' }
@@ -110,12 +107,8 @@ export function useAppState() {
         pendingEmail.value = loginEmail
         return { ok: false, needVerify: true, error: body }
       }
-      if (res.status === 401) {
-        authError.value = '邮箱或密码错误'
-        return { ok: false, error: '邮箱或密码错误' }
-      }
-      authError.value = '登录失败，请稍后重试'
-      return { ok: false, error: '登录失败' }
+      authError.value = body || '登录失败，请稍后重试'
+      return { ok: false, error: body || '登录失败' }
     } catch {
       authError.value = '网络错误，请检查连接'
       return { ok: false, error: '网络错误' }
