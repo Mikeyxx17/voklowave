@@ -1,4 +1,4 @@
-// 频道 REST API — GET /api/channels（列表）、POST /api/channels（创建）
+//! 频道 REST API：提供频道列表查询和新频道创建功能。
 
 use crate::middleware::auth::AuthUser;
 use crate::models::{Channel, CreateChannelInput};
@@ -7,13 +7,13 @@ use axum::Json;
 use axum::extract::State;
 use axum::{http::StatusCode, response::IntoResponse};
 
+/// 获取当前用户可见的频道列表（访客仅能看见 general）。
 pub async fn get_channels(State(state): State<AppState>, user: AuthUser) -> Json<Vec<Channel>> {
     let all_channels = sqlx::query_as::<_, Channel>("SELECT * FROM channels")
         .fetch_all(&state.db)
         .await
         .unwrap();
 
-    // 访客只能看到 general 频道
     if user.is_guest {
         let filtered_channels: Vec<Channel> = all_channels
             .into_iter()
@@ -25,6 +25,7 @@ pub async fn get_channels(State(state): State<AppState>, user: AuthUser) -> Json
     Json(all_channels)
 }
 
+/// 创建新频道：持久化到数据库并在内存中注册广播通道（访客禁止）。
 pub async fn create_channel(
     State(state): State<AppState>,
     user: AuthUser,
@@ -43,9 +44,10 @@ pub async fn create_channel(
 
     match result {
         Ok(_) => {
-            // 在内存中同步创建该频道的广播通道
-            let (tx, _rx) = tokio::sync::broadcast::channel(100);
-            state.channels.insert(input.name.clone(), tx);
+            state.channels.entry(input.name.clone()).or_insert_with(|| {
+                let (tx, _rx) = tokio::sync::broadcast::channel(100);
+                tx
+            });
 
             println!(
                 "用户 {} 创建频道 {} 成功，当前共 {} 个频道",

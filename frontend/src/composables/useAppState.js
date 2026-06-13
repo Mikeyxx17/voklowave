@@ -11,9 +11,10 @@ const showCreateModal = ref(false)
 const authError = ref('')
 const initializing = ref(true)
 const pendingEmail = ref('')
+const isGuestFlag = ref(false)
 
 // 是否为访客账号
-const isGuest = computed(() => username.value.startsWith('Guest_'))
+const isGuest = computed(() => isGuestFlag.value)
 
 // 主题变更 → localStorage + <html data-theme>
 watch(theme, (val) => {
@@ -46,16 +47,17 @@ const initAuth = async () => {
     const res = await fetch('/api/me', {
       headers: { Authorization: `Bearer ${saved}` },
     })
-    if (res.ok) {
-      const data = await res.json()
-      token.value = saved
-      username.value = data.username
-      email.value = data.email
-      isJoined.value = true
-    } else {
-      sessionStorage.removeItem('voklowave-token')
-      token.value = ''
-    }
+      if (res.ok) {
+        const data = await res.json()
+        token.value = saved
+        username.value = data.username
+        email.value = data.email
+        isGuestFlag.value = data.is_guest || false
+        isJoined.value = true
+      } else {
+        sessionStorage.removeItem('voklowave-token')
+        token.value = ''
+      }
   } catch {
     // 网络不通时保留 token，刷新页面后重试
   }
@@ -113,6 +115,7 @@ export function useAppState() {
         token.value = data.token
         username.value = data.username
         email.value = loginEmail
+        isGuestFlag.value = data.is_guest || false
         isJoined.value = true
         return { ok: true }
       }
@@ -173,6 +176,7 @@ export function useAppState() {
     if (username.value) {
       token.value = ''
       email.value = ''
+      isGuestFlag.value = false
       isJoined.value = true
     }
   }
@@ -190,6 +194,7 @@ export function useAppState() {
         const data = await res.json()
         token.value = data.token
         username.value = data.username
+        isGuestFlag.value = true
         isJoined.value = true
         return { ok: true }
       } else {
@@ -202,11 +207,50 @@ export function useAppState() {
     }
   }
 
+  /** 忘记密码：发送重置验证码到邮箱 */
+  const forgotPassword = async (targetEmail) => {
+    authError.value = ''
+    try {
+      const res = await fetch('/api/forgot_password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail }),
+      })
+      const body = await res.text()
+      if (res.ok) {
+        return { ok: true, message: body }
+      }
+      return { ok: false, error: body }
+    } catch {
+      return { ok: false, error: '网络错误，请检查连接' }
+    }
+  }
+
+  /** 重置密码：提交验证码 + 新密码 */
+  const resetPassword = async (targetEmail, code, newPassword) => {
+    authError.value = ''
+    try {
+      const res = await fetch('/api/reset_password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: targetEmail, code, new_password: newPassword }),
+      })
+      const body = await res.text()
+      if (res.ok) {
+        return { ok: true, message: body }
+      }
+      return { ok: false, error: body }
+    } catch {
+      return { ok: false, error: '网络错误，请检查连接' }
+    }
+  }
+
   /** 登出：清除全部状态回到登录页 */
   const logout = () => {
     token.value = ''
     username.value = ''
     email.value = ''
+    isGuestFlag.value = false
     isJoined.value = false
     currentChannel.value = 'general'
   }
@@ -235,6 +279,8 @@ export function useAppState() {
     join,
     logout,
     switchChannel,
-    quickExperience
+    quickExperience,
+    forgotPassword,
+    resetPassword
   }
 }

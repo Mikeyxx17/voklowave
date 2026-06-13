@@ -1,10 +1,14 @@
-// 用户认证处理器 — 注册、登录、邮箱验证、访客登录
+//! 认证相关接口：注册、登录、访客登录、邮箱验证、密码重置。
+
 
 use crate::middleware::auth::AuthUser;
 use crate::middleware::auth::Claims;
 use crate::models::MeResponse;
 use crate::models::VerifyEmailInput;
-use crate::models::{AuthResponse, LoginInput, RegisterInput, ResendVerifyInput, User};
+use crate::models::{
+    AuthResponse, ForgotPasswordInput, LoginInput, RegisterInput, ResendVerifyInput,
+    ResetPasswordInput, User,
+};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -16,7 +20,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use rand::RngExt;
 use std::time::Duration;
 
-/// 异步发送验证码邮件，失败不阻塞注册流程
+/// 异步发送验证码邮件（不阻塞当前请求）。
 fn send_verification_email(to_email: String, code: String) {
     tokio::spawn(async move {
         let smtp_server =
@@ -73,11 +77,11 @@ fn send_verification_email(to_email: String, code: String) {
     });
 }
 
+/// 注册新账号：校验域名白名单、输入长度、密码哈希，写入数据库并发送验证邮件。
 pub async fn register(
     State(state): State<AppState>,
     Json(input): Json<RegisterInput>,
 ) -> impl IntoResponse {
-    // 邮箱域名白名单校验
     let parts: Vec<&str> = input.email.split('@').collect();
     let email_domain = match parts.get(1) {
         Some(domain) => *domain,
@@ -93,7 +97,6 @@ pub async fn register(
         return (StatusCode::FORBIDDEN, "该邮箱域名不在允许的注册白名单内").into_response();
     }
 
-    // 输入长度校验
     if input.username.len() < 3 || input.username.len() > 30 {
         return (
             StatusCode::BAD_REQUEST,
@@ -134,7 +137,6 @@ pub async fn register(
 
     match result {
         Ok(_) => {
-            // 验证码写入独立表
             let _ = sqlx::query!(
                 "INSERT INTO verification_codes (email, code, purpose, expires_at) VALUES ($1, $2, 'email_verify', $3)",
                 input.email,
@@ -158,6 +160,7 @@ pub async fn register(
     }
 }
 
+/// 邮箱+密码登录：bcrypt 验密，返回 JWT（7 天有效）。未验证邮箱返回 403。
 pub async fn login(
     State(state): State<AppState>,
     Json(input): Json<LoginInput>,
@@ -175,7 +178,6 @@ pub async fn login(
             let password_ok = bcrypt::verify(&input.password, &user.password_hash).unwrap_or(false);
 
             if password_ok {
-                // 未验证邮箱的账号拒绝登录，引导用户前往验证页面
                 if !user.is_verified {
                     return (
                         StatusCode::FORBIDDEN,
@@ -219,6 +221,7 @@ pub async fn login(
                     username: user.username,
                     display_name: user.display_name,
                     avatar_url: user.avatar_url,
+                    is_guest: false,
                 };
 
                 (StatusCode::OK, Json(response_body)).into_response()
@@ -234,15 +237,18 @@ pub async fn login(
     }
 }
 
+/// 获取当前登录用户基本信息（页面刷新恢复会话）。
 pub async fn get_current_user(user: AuthUser) -> impl IntoResponse {
     let response_body = MeResponse {
         id: user.user_id,
         username: user.username,
         email: user.email,
+        is_guest: user.is_guest,
     };
     (StatusCode::OK, Json(response_body))
 }
 
+/// 访客快速登录：生成临时账号和 JWT（1 天有效），仅限 general 频道。
 pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
     let unique_id = uuid::Uuid::new_v4().to_string();
     let short_id = &unique_id[..8];
@@ -290,6 +296,7 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                         username: guest_username,
                         display_name: None,
                         avatar_url: None,
+                        is_guest: true,
                     };
                     (StatusCode::OK, Json(response_body)).into_response()
                 }
@@ -306,11 +313,11 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// 重新发送邮箱验证码（每日最多 3 次，60 秒冷却）。
 pub async fn resend_verification(
     State(state): State<AppState>,
     Json(input): Json<ResendVerifyInput>,
 ) -> impl IntoResponse {
-    // 先确认用户存在且未激活
     let user_row = sqlx::query!(
         "SELECT is_verified FROM users WHERE email = $1",
         input.email
@@ -332,7 +339,6 @@ pub async fn resend_verification(
         }
     }
 
-    // 查询该邮箱的验证码记录
     let vc_row = sqlx::query!(
         "SELECT code, expires_at, resend_count, last_resend_at FROM verification_codes WHERE email = $1 AND purpose = 'email_verify'",
         input.email
@@ -344,12 +350,10 @@ pub async fn resend_verification(
     let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc();
 
     let effective_count = match vc_row {
-        Ok(Some(ref row)) => {
-            match row.last_resend_at {
-                Some(last) if last >= today_start => row.resend_count,
-                _ => 0,
-            }
-        }
+        Ok(Some(ref row)) => match row.last_resend_at {
+            Some(last) if last >= today_start => row.resend_count,
+            _ => 0,
+        },
         _ => 0,
     };
 
@@ -361,18 +365,15 @@ pub async fn resend_verification(
             .into_response();
     }
 
-    // 60 秒冷却
     if let Ok(Some(ref row)) = vc_row {
         if row.expires_at > now + chrono::Duration::minutes(14) {
-            return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送")
-                .into_response();
+            return (StatusCode::TOO_MANY_REQUESTS, "请等待 60 秒后再重新发送").into_response();
         }
     }
 
     let new_code = rand::rng().random_range(100000..1000000).to_string();
     let new_expires_at = now + chrono::Duration::minutes(15);
 
-    // UPSERT：有则更新，无则插入
     let upsert_result = sqlx::query!(
         "INSERT INTO verification_codes (email, code, purpose, expires_at, resend_count, last_resend_at) \
          VALUES ($1, $2, 'email_verify', $3, $4, $5) \
@@ -399,11 +400,11 @@ pub async fn resend_verification(
     }
 }
 
+/// 提交 6 位验证码激活邮箱（事务更新 is_verified + 删除验证码记录）。
 pub async fn verify_email(
     State(state): State<AppState>,
     Json(input): Json<VerifyEmailInput>,
 ) -> impl IntoResponse {
-    // 检查用户是否存在且未激活
     let user_row = sqlx::query!(
         "SELECT is_verified FROM users WHERE email = $1",
         input.email
@@ -424,7 +425,6 @@ pub async fn verify_email(
         }
     }
 
-    // 从验证码表取出 code 和过期时间
     let vc_row = sqlx::query!(
         "SELECT code, expires_at FROM verification_codes WHERE email = $1 AND purpose = 'email_verify'",
         input.email
@@ -450,7 +450,6 @@ pub async fn verify_email(
         return (StatusCode::UNAUTHORIZED, "验证码不正确").into_response();
     }
 
-    // 激活账号并清除验证码记录
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
@@ -482,7 +481,224 @@ pub async fn verify_email(
             (StatusCode::OK, "账号激活成功！现在您可以正常登录了").into_response()
         }
         (err_user, err_vc) => {
-            println!("激活失败，user_update: {:?}, vc_delete: {:?}", err_user, err_vc);
+            println!(
+                "激活失败，user_update: {:?}, vc_delete: {:?}",
+                err_user, err_vc
+            );
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// 异步发送密码重置验证码邮件。
+fn send_password_reset_email(to_email: String, code: String) {
+    tokio::spawn(async move {
+        let smtp_server =
+            std::env::var("SMTP_SERVER").unwrap_or_else(|_| "smtp.qq.com".to_string());
+        let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
+        let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
+
+        let from_address = match format!("voklowave 安全中心 <{}>", username).parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                println!("❌ [邮件服务] 发件人邮箱格式解析失败: {}", e);
+                return;
+            }
+        };
+        let to_address = match to_email.parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                println!("❌ [邮件服务] 收件人邮箱格式解析失败: {}", e);
+                return;
+            }
+        };
+
+        let email_content = match Message::builder()
+            .from(from_address)
+            .to(to_address)
+            .subject("【voklowave】密码重置验证码")
+            .body(format!(
+                "您正在尝试重置 voklowave 账号的密码。\n\n您的 6 位密码重置验证码为：【 {} 】\n\n该验证码在 15 分钟内有效。\n如果非本人操作，请忽略此邮件，您的密码不会改变。",
+                code
+            )) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    println!("❌ [邮件服务] 构建邮件内容失败: {}", e);
+                    return;
+                }
+            };
+
+        let mailer_builder = match SmtpTransport::relay(&smtp_server) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("❌ [邮件服务] 连接 SMTP 服务器失败: {}", e);
+                return;
+            }
+        };
+        let mailer = mailer_builder
+            .credentials(Credentials::new(username, password))
+            .timeout(Some(Duration::from_secs(15)))
+            .build();
+
+        match mailer.send(&email_content) {
+            Ok(_) => println!("✅ [邮件服务] 成功为用户 {} 发送密码重置邮件！", to_email),
+            Err(e) => println!("❌ [邮件服务] 发信被拒绝或网络超时，详细错误: {:?}", e),
+        }
+    });
+}
+
+/// 发送密码重置验证码：生成 6 位数字，写入 verification_codes 表并发送邮件。
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Json(input): Json<ForgotPasswordInput>,
+) -> impl IntoResponse {
+    let user_row = sqlx::query!("SELECT email FROM users WHERE email = $1", input.email)
+        .fetch_optional(&state.db)
+        .await;
+
+    let user_exists = match user_row {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            return (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response();
+        }
+        Err(e) => {
+            println!("查询用户失败: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    if !user_exists {
+        return (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response();
+    }
+
+    let reset_code = rand::rng().random_range(100000..1000000).to_string();
+    let expires_at = chrono::Utc::now() + chrono::Duration::minutes(15);
+
+    let upsert_result = sqlx::query!(
+        "INSERT INTO verification_codes (email, code, purpose, expires_at) \
+         VALUES ($1, $2, 'password_reset', $3) \
+         ON CONFLICT (email, purpose) \
+         DO UPDATE SET code = $2, expires_at = $3",
+        input.email,
+        reset_code,
+        expires_at
+    )
+    .execute(&state.db)
+    .await;
+
+    match upsert_result {
+        Ok(_) => {
+            send_password_reset_email(input.email.clone(), reset_code);
+            (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response()
+        }
+        Err(e) => {
+            println!("写入密码重置验证码失败: {:?}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// 提交验证码 + 新密码完成密码重置（事务更新 password_hash + 删除验证码记录）。
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Json(input): Json<ResetPasswordInput>,
+) -> impl IntoResponse {
+    if input.new_password.len() < 6 || input.new_password.len() > 128 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "新密码长度必须在 6 到 128 个字符之间",
+        )
+            .into_response();
+    }
+
+    let user_row = sqlx::query!("SELECT id, email FROM users WHERE email = $1", input.email)
+        .fetch_optional(&state.db)
+        .await;
+
+    match user_row {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
+        Err(e) => {
+            println!("查询用户失败: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
+    let vc_row = sqlx::query!(
+        "SELECT code, expires_at FROM verification_codes WHERE email = $1 AND purpose = 'password_reset'",
+        input.email
+    )
+    .fetch_optional(&state.db)
+    .await;
+
+    let vc = match vc_row {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "验证码不存在或已过期，请重新申请重置",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            println!("查询重置验证码失败: {:?}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let now = chrono::Utc::now();
+    if now > vc.expires_at {
+        return (StatusCode::BAD_REQUEST, "验证码已过期，请重新申请重置").into_response();
+    }
+
+    if vc.code != input.code {
+        return (StatusCode::UNAUTHORIZED, "验证码不正确").into_response();
+    }
+
+    let hashed_password = match bcrypt::hash(&input.new_password, 10) {
+        Ok(h) => h,
+        Err(e) => {
+            println!("密码哈希失败: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "服务器内部错误").into_response();
+        }
+    };
+
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            println!("开启事务失败: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "重置失败，请稍后重试").into_response();
+        }
+    };
+
+    let pw_update = sqlx::query!(
+        "UPDATE users SET password_hash = $1 WHERE email = $2",
+        hashed_password,
+        input.email
+    )
+    .execute(&mut *tx)
+    .await;
+
+    let vc_delete = sqlx::query!(
+        "DELETE FROM verification_codes WHERE email = $1 AND purpose = 'password_reset'",
+        input.email
+    )
+    .execute(&mut *tx)
+    .await;
+
+    match (pw_update, vc_delete) {
+        (Ok(_), Ok(_)) => {
+            if let Err(e) = tx.commit().await {
+                println!("提交事务失败: {:?}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "重置失败，请稍后重试").into_response();
+            }
+            (StatusCode::OK, "密码重置成功，请使用新密码登录").into_response()
+        }
+        (err_pw, err_vc) => {
+            println!(
+                "密码重置失败，pw_update: {:?}, vc_delete: {:?}",
+                err_pw, err_vc
+            );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

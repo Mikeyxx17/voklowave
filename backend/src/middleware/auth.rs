@@ -1,4 +1,4 @@
-// JWT 认证中间件 — 从 Authorization 头提取并校验令牌，注入 AuthUser
+//! JWT 认证中间件：定义 Claims 载荷结构体，并通过 AuthUser 提取器自动校验请求令牌。
 
 use crate::state::AppState;
 use axum::{
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static FALLBACK_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
 
-/// JWT 载荷 — 与登录签发时的字段保持一致
+/// JWT 令牌载荷，包含用户标识、邮箱、用户名、访客标记和过期时间。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: i32,
@@ -21,7 +21,7 @@ pub struct Claims {
     pub exp: usize,
 }
 
-/// 通过认证的用户信息，在 handler 参数中声明即可触发 JWT 校验
+/// 通过 JWT 校验后的用户身份，handler 中直接声明该参数即可触发认证。
 #[derive(Debug)]
 pub struct AuthUser {
     pub user_id: i32,
@@ -30,10 +30,14 @@ pub struct AuthUser {
     pub is_guest: bool,
 }
 
+/// 从请求头 `Authorization: Bearer <token>` 中提取并校验 JWT，生成 AuthUser。
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = StatusCode;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let auth_header = parts
             .headers
             .get(axum::http::header::AUTHORIZATION)
@@ -68,7 +72,6 @@ impl FromRequestParts<AppState> for AuthUser {
 
         match token_data {
             Ok(data) => {
-                // 访客需要额外检查 DB 存活状态（可能已被定时清理任务删除）
                 if data.claims.is_guest {
                     let exists = sqlx::query_scalar!(
                         r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1) as "exists!""#,
@@ -89,7 +92,7 @@ impl FromRequestParts<AppState> for AuthUser {
                     email: data.claims.email,
                     is_guest: data.claims.is_guest,
                 })
-            },
+            }
             Err(err) => {
                 println!("[验票失败] 令牌非法或已过期: {:?}", err);
                 Err(StatusCode::UNAUTHORIZED)

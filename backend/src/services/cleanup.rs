@@ -1,7 +1,9 @@
+//! 访客账号自动清理服务：定时删除过期访客及其消息（事务保证原子性）。
+
 use sqlx::PgPool;
 use std::time::Duration;
 
-/// 启动后台定时任务：每隔 interval_secs 秒，删除超过 max_age_hours 小时的访客及其消息
+/// 启动后台清理任务，定期删除超过 `max_age_hours` 小时的访客账号和对应消息。
 pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours: u64) {
     println!(
         "🚀 后台游客清理任务已启动，检查间隔 {} 秒",
@@ -15,7 +17,6 @@ pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours:
             ticker.tick().await;
             println!("🧹 开始执行游客清理...");
 
-            // 使用事务保证消息与用户同步删除，不留孤儿数据
             let mut tx = match pool.begin().await {
                 Ok(transaction) => transaction,
                 Err(e) => {
@@ -25,6 +26,7 @@ pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours:
             };
 
             let max_hours = max_age_hours as i64;
+
 
             let msg_result = sqlx::query(
                 "DELETE FROM messages USING users \

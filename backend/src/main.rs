@@ -1,10 +1,14 @@
-// 后端服务入口 — 启动引导、路由注册、服务器绑定
+//! 服务入口：加载环境变量、初始化数据库、执行迁移、注册路由并启动 HTTP 监听。
+//!
+//! 启动命令：`cd backend && cargo run`
+//! 监听地址：`0.0.0.0:3000`
 
 mod handlers;
 mod middleware;
 mod models;
 mod services;
 mod state;
+
 use axum::{
     Router,
     routing::{get, post},
@@ -12,8 +16,8 @@ use axum::{
 use dashmap::DashMap;
 use dotenvy::dotenv;
 use handlers::{
-    create_channel, get_channels, get_current_user, guest_login, login, register,
-    resend_verification, verify_email, ws_handler,
+    create_channel, forgot_password, get_channels, get_current_user, guest_login, login,
+    register, resend_verification, reset_password, verify_email, ws_handler,
 };
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
@@ -22,6 +26,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 
+/// 应用主入口：依次初始化数据库、后台任务、频道缓存、CORS、路由，然后绑定端口启动。
 #[tokio::main]
 async fn main() {
     dotenv().ok();
@@ -50,16 +55,12 @@ async fn main() {
         cleanup_interval,
         max_age_hours,
     ));
+
     let channels = Arc::new(DashMap::new());
     let state = AppState {
         db: pool.clone(),
         channels,
     };
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
 
     let saved_channels = sqlx::query!("SELECT name FROM channels")
         .fetch_all(&state.db)
@@ -73,6 +74,11 @@ async fn main() {
 
     println!("已成功加载 {} 个频道", state.channels.len());
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/ws/{channel}", get(ws_handler))
         .route("/api/channels", get(get_channels).post(create_channel))
@@ -81,6 +87,8 @@ async fn main() {
         .route("/api/verify_email", post(verify_email))
         .route("/api/resend_verification", post(resend_verification))
         .route("/api/guest_login", post(guest_login))
+        .route("/api/forgot_password", post(forgot_password))
+        .route("/api/reset_password", post(reset_password))
         .route("/api/me", get(get_current_user))
         .layer(cors)
         .with_state(state);

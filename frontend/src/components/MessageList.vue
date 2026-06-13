@@ -79,14 +79,16 @@ onMounted(() => {
   nextTick(goBottom)
 })
 
-// 日期分隔线
-let lastDate = ''
-const showDateSep = (i, msg) => {
-  const cur = msg.created_at ? new Date(msg.created_at).toDateString() : ''
-  if (i === 0) { lastDate = cur; return true }
-  if (cur !== lastDate) { lastDate = cur; return true }
-  return false
-}
+// 日期分隔线 — 使用闭包保证每个组件实例独立
+const showDateSep = (() => {
+  let lastDate = ''
+  return (i, msg) => {
+    const cur = msg.created_at ? new Date(msg.created_at).toDateString() : ''
+    if (i === 0) { lastDate = cur; return true }
+    if (cur !== lastDate) { lastDate = cur; return true }
+    return false
+  }
+})()
 
 const fmtDate = (iso) => {
   if (!iso) return ''

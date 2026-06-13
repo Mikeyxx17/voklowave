@@ -1,4 +1,4 @@
-// WebSocket 聊天消息处理器 — 连接升级、生命周期管理、消息广播
+//! WebSocket 实时消息处理：JWT 校验、协议升级、消息广播、历史回放、心跳保活。
 
 use crate::middleware::auth::{AuthUser, Claims};
 use crate::models::ChatMessage;
@@ -15,11 +15,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static FALLBACK_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// WebSocket 连接 URL 查询参数（`?token=`）。
 #[derive(serde::Deserialize)]
 pub(crate) struct WsQuery {
     pub token: Option<String>,
 }
 
+/// WebSocket 升级入口：校验 JWT、检查访客权限，升级成功后进入消息循环。
 pub async fn ws_handler(
     ws: Ws,
     Path(channel_name): Path<String>,
@@ -80,6 +82,7 @@ pub async fn ws_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state, channel_name, user))
 }
 
+/// WebSocket 主循环：回放历史消息 → 订阅广播 → 收发消息 + 心跳。
 async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String, user: AuthUser) {
     let tx = state.get_or_create_channel(channel_name.clone()).await;
 
@@ -109,13 +112,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                 match user_msg {
                     Some(Ok(msg)) => {
                         if let Message::Text(text) = msg {
-                            // 心跳：收到 ping 回 pong，跳过正常的消息解析
                             if let Ok(ping) = serde_json::from_str::<serde_json::Value>(&text) {
                                 if ping.get("type").and_then(|v| v.as_str()) == Some("ping") {
                                     let _ = sender.send(Message::Text("{\"type\":\"pong\"}".into())).await;
                                     continue;
                                 }
                             }
+
                             match serde_json::from_str::<ChatMessage>(&text) {
                                 Ok(mut parsed_msg) => {
                                     parsed_msg.channel = channel_name.clone();

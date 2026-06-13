@@ -65,6 +65,10 @@
               <span v-if="authLoading" class="loading loading-spinner loading-sm"></span>
               <span v-else>登录</span>
             </button>
+            <button
+              class="btn btn-link btn-sm text-base-content/40 p-0 h-auto min-h-0"
+              @click="switchToForgot"
+            >忘记密码？</button>
           </template>
 
           <template v-if="mode === 'register'">
@@ -176,6 +180,90 @@
             </div>
           </template>
 
+          <template v-if="mode === 'forgot'">
+            <template v-if="forgotStep === 1">
+              <div class="flex flex-col items-center w-full gap-4 py-2">
+                <div class="w-16 h-16 bg-warning/10 rounded-full flex items-center justify-center mb-2 text-warning">
+                  <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                  </svg>
+                </div>
+                <p class="text-sm text-base-content/70">请输入您的注册邮箱</p>
+                <div class="form-control w-full">
+                  <input
+                    v-model="forgotEmail"
+                    class="input input-bordered h-12 w-full bg-base-200/60"
+                    placeholder="请输入邮箱"
+                    type="email"
+                    @keyup.enter="doForgotPassword"
+                  />
+                </div>
+                <p v-if="forgotMsg" class="text-xs font-medium" :class="forgotOk ? 'text-success' : 'text-error'">{{ forgotMsg }}</p>
+                <button
+                  class="btn btn-primary h-12 w-full text-base rounded-field"
+                  :disabled="!forgotEmail.trim() || forgotLoading"
+                  @click="doForgotPassword"
+                >
+                  <span v-if="forgotLoading" class="loading loading-spinner loading-sm"></span>
+                  <span v-else>发送重置验证码</span>
+                </button>
+                <button
+                  class="btn btn-ghost btn-sm text-base-content/40"
+                  @click="switchMode('login'); clearForgot()"
+                >返回登录</button>
+              </div>
+            </template>
+
+            <template v-if="forgotStep === 2">
+              <div class="flex flex-col items-center w-full gap-4 py-2">
+                <div class="w-16 h-16 bg-success/10 rounded-full flex items-center justify-center mb-2 text-success">
+                  <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <p class="text-sm text-base-content/70">验证码已发送至</p>
+                <p class="text-sm font-bold text-base-content">{{ forgotEmail }}</p>
+
+                <div class="form-control w-full">
+                  <input
+                    v-model="forgotCode"
+                    class="input input-bordered h-14 w-full bg-base-200/60 text-center text-2xl tracking-[0.5em] font-mono"
+                    placeholder="000000"
+                    maxlength="6"
+                    @keyup.enter="focusForgotPassword"
+                  />
+                </div>
+
+                <div class="form-control w-full">
+                  <input
+                    ref="forgotPasswordInput"
+                    v-model="forgotNewPassword"
+                    class="input input-bordered h-12 w-full bg-base-200/60"
+                    placeholder="请输入新密码"
+                    type="password"
+                    @keyup.enter="doResetPassword"
+                  />
+                </div>
+
+                <p v-if="forgotMsg" class="text-xs font-medium" :class="forgotOk ? 'text-success' : 'text-error'">{{ forgotMsg }}</p>
+
+                <button
+                  class="btn btn-success h-12 w-full text-base rounded-field"
+                  :disabled="forgotCode.length !== 6 || !forgotNewPassword || forgotLoading"
+                  @click="doResetPassword"
+                >
+                  <span v-if="forgotLoading" class="loading loading-spinner loading-sm"></span>
+                  <span v-else>重置密码</span>
+                </button>
+
+                <button
+                  class="btn btn-ghost btn-sm text-base-content/40"
+                  @click="switchMode('login'); clearForgot()"
+                >返回登录</button>
+              </div>
+            </template>
+          </template>
+
           <template v-if="mode === 'quick'">
             <div class="flex flex-col items-center justify-center w-full py-4">
               <div class="w-16 h-16 bg-primary/10 rounded-full flex items-center justify-center mb-4 text-primary">
@@ -242,7 +330,7 @@ import { ref, computed } from 'vue'
 import { useAppState } from '../composables/useAppState'
 
 // 注意这里解构出了 quickExperience 和验证相关方法
-const { login, register, verifyEmail, resendVerification, theme, authError, pendingEmail, quickExperience } = useAppState()
+const { login, register, verifyEmail, resendVerification, theme, authError, pendingEmail, quickExperience, forgotPassword, resetPassword } = useAppState()
 
 const mode = ref('login')
 const authLoading = ref(false)
@@ -358,6 +446,72 @@ const doResend = async () => {
   resendLoading.value = false
 }
 
+// ── 忘记密码 ──
+const forgotEmail = ref('')
+const forgotStep = ref(1)
+const forgotCode = ref('')
+const forgotNewPassword = ref('')
+const forgotLoading = ref(false)
+const forgotMsg = ref('')
+const forgotOk = ref(false)
+const forgotPasswordInput = ref(null)
+
+const clearForgot = () => {
+  forgotEmail.value = ''
+  forgotStep.value = 1
+  forgotCode.value = ''
+  forgotNewPassword.value = ''
+  forgotMsg.value = ''
+  forgotOk.value = false
+}
+
+const switchToForgot = () => {
+  clearForgot()
+  forgotEmail.value = loginEmail.value
+  mode.value = 'forgot'
+}
+
+const doForgotPassword = async () => {
+  if (!forgotEmail.value.trim()) return
+  forgotLoading.value = true
+  forgotMsg.value = ''
+  const result = await forgotPassword(forgotEmail.value.trim())
+  if (result.ok) {
+    forgotOk.value = true
+    forgotMsg.value = result.message
+    forgotStep.value = 2
+  } else {
+    forgotOk.value = false
+    forgotMsg.value = result.error
+  }
+  forgotLoading.value = false
+}
+
+const focusForgotPassword = () => {
+  forgotPasswordInput.value?.focus()
+}
+
+const doResetPassword = async () => {
+  if (forgotCode.value.length !== 6 || !forgotNewPassword.value) return
+  forgotLoading.value = true
+  forgotMsg.value = ''
+  const result = await resetPassword(forgotEmail.value, forgotCode.value, forgotNewPassword.value)
+  if (result.ok) {
+    forgotOk.value = true
+    forgotMsg.value = result.message
+    // 2 秒后返回登录页，预填邮箱
+    setTimeout(() => {
+      switchMode('login')
+      loginEmail.value = forgotEmail.value
+      clearForgot()
+    }, 2000)
+  } else {
+    forgotOk.value = false
+    forgotMsg.value = result.error
+  }
+  forgotLoading.value = false
+}
+
 // ── 快速体验（调用后端 API 版）──
 const handleQuickJoin = async () => {
   authLoading.value = true
@@ -371,6 +525,9 @@ const switchMode = (key) => {
   if (key !== 'verify') {
     clearVerify()
     pendingEmail.value = ''
+  }
+  if (key !== 'forgot') {
+    clearForgot()
   }
 }
 
