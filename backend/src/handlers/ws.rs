@@ -1,4 +1,6 @@
 //! WebSocket 实时消息处理：JWT 校验、协议升级、消息广播、历史回放、心跳保活。
+//!
+//! 新增：控制事件通道监听（消息删除等），墓碑表同步。
 
 use crate::middleware::auth::{AuthUser, Claims};
 use crate::models::ChatMessage;
@@ -82,13 +84,36 @@ pub async fn ws_handler(
     ws.on_upgrade(|socket| handle_socket(socket, state, channel_name, user))
 }
 
-/// WebSocket 主循环：回放历史消息 → 订阅广播 → 收发消息 + 心跳。
+/// WebSocket 主循环：
+///   1. 下发墓碑列表（最近 1 小时被删的消息 ID）
+///   2. 回放最近 50 条历史消息
+///   3. 三路 select：用户消息 / 聊天广播 / 控制事件广播
 async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String, user: AuthUser) {
     let tx = state.get_or_create_channel(channel_name.clone()).await;
+    let control_tx = state.get_or_create_control_channel(&channel_name);  // 新增
 
     let (mut sender, mut receiver) = socket.split();
     let mut rx = tx.subscribe();
+    let mut crx = control_tx.subscribe();  // 新增：控制事件订阅
 
+    // ── 1. 下发墓碑列表（防止重连后遗留幽灵消息） ──
+    let deletions = sqlx::query_scalar!(
+        "SELECT id FROM deleted_messages WHERE channel = $1 AND deleted_at > NOW() - INTERVAL '1 hour'",
+        channel_name
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    if let Ok(ids) = deletions {
+        for id in ids {
+            let event = serde_json::json!({"type":"message_deleted","message_id":id});
+            if sender.send(Message::Text(event.to_string().into())).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    // ── 2. 回放历史消息 ──
     let history = sqlx::query_as::<_, ChatMessage>(
         "SELECT * FROM (SELECT * FROM messages WHERE channel = $1 ORDER BY id DESC LIMIT 50) AS sub ORDER BY id ASC",
     )
@@ -99,15 +124,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
     if let Ok(msgs) = history {
         for msg in msgs {
             if let Ok(json) = serde_json::to_string(&msg) {
-                if let Err(_) = sender.send(Message::Text(json.into())).await {
+                if sender.send(Message::Text(json.into())).await.is_err() {
                     return;
                 }
             }
         }
     }
 
+    // ── 3. 主循环：三路 select ──
     loop {
         tokio::select! {
+            // 分支 1：用户发送消息（不变）
             user_msg = receiver.next() => {
                 match user_msg {
                     Some(Ok(msg)) => {
@@ -123,23 +150,35 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                                 Ok(mut parsed_msg) => {
                                     parsed_msg.channel = channel_name.clone();
                                     parsed_msg.username = user.username.clone();
-                                    parsed_msg.display_name = None;
-                                    parsed_msg.avatar_url = None;
-
-                                    let db_result = sqlx::query(
-                                        "INSERT INTO messages (channel, username, content) VALUES ($1, $2, $3)"
+                                    // ── 查用户资料，消息带上当前昵称和头像 ──
+                                    let profile = sqlx::query!(
+                                        "SELECT display_name, avatar_url FROM users WHERE id = $1",
+                                        user.user_id
                                     )
-                                    .bind(&parsed_msg.channel)
-                                    .bind(&parsed_msg.username)
-                                    .bind(&parsed_msg.content)
-                                    .execute(&state.db)
+                                    .fetch_optional(&state.db)
+                                    .await
+                                    .ok()
+                                    .flatten();
+                                    parsed_msg.display_name = profile.as_ref().and_then(|p| p.display_name.clone());
+                                    parsed_msg.avatar_url = profile.as_ref().and_then(|p| p.avatar_url.clone());
+
+                                    // ── 使用 RETURNING id 取回自增主键，广播时带上 id ──
+                                    let db_result = sqlx::query_scalar!(
+                                        "INSERT INTO messages (channel, username, content) VALUES ($1, $2, $3) RETURNING id",
+                                        &parsed_msg.channel,
+                                        &parsed_msg.username,
+                                        &parsed_msg.content
+                                    )
+                                    .fetch_one(&state.db)
                                     .await;
 
-                                    if let Ok(_) = db_result {
-                                        parsed_msg.created_at = Some(chrono::Utc::now());
-                                        let _ = tx.send(parsed_msg);
-                                    } else if let Err(e) = db_result {
-                                        println!("数据库写入失败: {}", e);
+                                    match db_result {
+                                        Ok(new_id) => {
+                                            parsed_msg.id = Some(new_id);
+                                            parsed_msg.created_at = Some(chrono::Utc::now());
+                                            let _ = tx.send(parsed_msg);
+                                        }
+                                        Err(e) => println!("数据库写入失败: {}", e),
                                     }
                                 }
                                 Err(e) => println!("解析失败: {}", e),
@@ -150,10 +189,22 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                 }
             }
 
+            // 分支 2：聊天消息广播（不变）
             recv_result = rx.recv() => {
                 if let Ok(broadcast_msg) = recv_result {
                     if let Ok(json_text) = serde_json::to_string(&broadcast_msg) {
-                        if let Err(_) = sender.send(Message::Text(json_text.into())).await {
+                        if sender.send(Message::Text(json_text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // 分支 3：控制事件广播（新增 — 消息删除等）
+            ctrl_result = crx.recv() => {
+                if let Ok(event) = ctrl_result {
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        if sender.send(Message::Text(json.into())).await.is_err() {
                             break;
                         }
                     }

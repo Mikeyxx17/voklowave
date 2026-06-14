@@ -1,12 +1,28 @@
-//! 访客账号自动清理服务：定时删除过期访客及其消息（事务保证原子性）。
+//! 后台服务任务：访客清理 + 墓碑清理 + WebSocket 广播通知。
 
+use crate::state::ControlEvent;  // 新增：控制事件类型
+use dashmap::DashMap;            // 新增
 use sqlx::PgPool;
+use std::sync::Arc;              // 新增
 use std::time::Duration;
+use tokio::sync::broadcast;      // 新增
 
-/// 启动后台清理任务，定期删除超过 `max_age_hours` 小时的访客账号和对应消息。
-pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours: u64) {
+/// 启动后台清理任务，定期清理过期访客和过期墓碑记录。
+///
+/// **访客清理**（三步走）：
+///   1. 事务外先查询将要被删除的消息 ID 和频道
+///   2. 开启事务删除消息和用户，提交
+///   3. 提交成功后，通过 control_channels 广播删除事件，通知在线客户端即时移除
+///
+/// **墓碑清理**：删除超过 1 小时的墓碑记录。
+pub async fn spawn_cleanup_task(
+    pool: PgPool,
+    control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,  // 新增：控制事件广播通道
+    interval_secs: u64,
+    max_age_hours: u64,
+) {
     println!(
-        "🚀 后台游客清理任务已启动，检查间隔 {} 秒",
+        "🚀 后台清理任务已启动，检查间隔 {} 秒",
         interval_secs
     );
 
@@ -15,18 +31,32 @@ pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours:
 
         loop {
             ticker.tick().await;
-            println!("🧹 开始执行游客清理...");
+            println!("🧹 开始执行清理...");
 
+            // ── 步骤 1：事务外先查出将被删除的消息（不锁定，不阻塞） ──
+            let doomed: Vec<(i32, String)> = sqlx::query_as(
+                "SELECT m.id, m.channel \
+                 FROM messages m \
+                 JOIN users u ON m.username = u.username \
+                 WHERE u.is_guest = true \
+                 AND u.created_at < NOW() - ($1 || ' hours')::INTERVAL"
+            )
+            .bind(max_age_hours as i64)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+            // ── 步骤 2：开启事务，执行物理删除 ──
             let mut tx = match pool.begin().await {
                 Ok(transaction) => transaction,
                 Err(e) => {
                     println!("❌ 开启清理事务失败: {}", e);
+                    cleanup_tombstones(&pool).await;
                     continue;
                 }
             };
 
             let max_hours = max_age_hours as i64;
-
 
             let msg_result = sqlx::query(
                 "DELETE FROM messages USING users \
@@ -53,19 +83,58 @@ pub async fn spawn_cleanup_task(pool: PgPool, interval_secs: u64, max_age_hours:
                         println!("❌ 提交清理事务失败: {}", e);
                     } else {
                         println!(
-                            "✅ 清理完成：删除 {} 个访客、{} 条消息",
+                            "✅ 访客清理完成：删除 {} 个访客、{} 条消息",
                             user_rows.rows_affected(),
                             msg_rows.rows_affected()
                         );
+
+                        // ── 步骤 3：事务提交成功后，广播删除事件给在线客户端 ──
+                        // 必须在事务外广播 —— 若事务回滚，消息还在，不该通知客户端
+                        for (msg_id, channel) in &doomed {
+                            if let Some(tx) = control_channels.get(channel) {
+                                let _ = tx.send(ControlEvent::MessageDeleted {
+                                    message_id: *msg_id,
+                                });
+                            }
+                        }
+                        if !doomed.is_empty() {
+                            println!(
+                                "📡 已向在线客户端广播 {} 条访客消息删除事件",
+                                doomed.len()
+                            );
+                        }
                     }
                 }
                 (err_msg, err_user) => {
                     println!(
-                        "❌ 清理出错，事务已回滚。消息: {:?}, 用户: {:?}",
+                        "❌ 访客清理出错，事务已回滚。消息: {:?}, 用户: {:?}",
                         err_msg, err_user
                     );
                 }
             }
+
+            // ── 墓碑清理（独立执行，不受访客清理成败影响） ──
+            cleanup_tombstones(&pool).await;
         }
     });
+}
+
+/// 删除超过 1 小时的墓碑记录。
+/// 墓碑仅用于重连客户端同步删除事件，离线超过 1 小时的客户端重连时
+/// 回放的 50 条历史消息已不包含被删消息，墓碑无保留价值。
+async fn cleanup_tombstones(pool: &PgPool) {
+    match sqlx::query(
+        "DELETE FROM deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour'",
+    )
+    .execute(pool)
+    .await
+    {
+        Ok(result) => {
+            let rows = result.rows_affected();
+            if rows > 0 {
+                println!("🧹 墓碑清理：删除了 {} 条过期记录", rows);
+            }
+        }
+        Err(e) => println!("❌ 墓碑清理失败: {:?}", e),
+    }
 }

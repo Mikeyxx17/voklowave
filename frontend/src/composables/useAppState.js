@@ -13,6 +13,11 @@ const initializing = ref(true)
 const pendingEmail = ref('')
 const isGuestFlag = ref(false)
 
+// ── 新增：用户资料字段 ──
+const displayName = ref('')
+const avatarUrl = ref('')
+const bio = ref('')
+
 // 是否为访客账号
 const isGuest = computed(() => isGuestFlag.value)
 
@@ -36,8 +41,22 @@ watch(currentChannel, (val) => {
   sessionStorage.setItem('voklowave-channel', val)
 })
 
+// ── 新增：资料字段 → sessionStorage 持久化（可选，刷新后保留编辑结果） ──
+watch(displayName, (val) => {
+  if (val) sessionStorage.setItem('voklowave-display-name', val)
+  else sessionStorage.removeItem('voklowave-display-name')
+})
+watch(avatarUrl, (val) => {
+  if (val) sessionStorage.setItem('voklowave-avatar-url', val)
+  else sessionStorage.removeItem('voklowave-avatar-url')
+})
+
 // 页面加载时尝试用 sessionStorage 中的 token 恢复会话
 const initAuth = async () => {
+  // 恢复持久化的资料（在 /api/me 返回前先用本地缓存）
+  displayName.value = sessionStorage.getItem('voklowave-display-name') || ''
+  avatarUrl.value = sessionStorage.getItem('voklowave-avatar-url') || ''
+
   const saved = sessionStorage.getItem('voklowave-token')
   if (!saved) {
     initializing.value = false
@@ -53,7 +72,11 @@ const initAuth = async () => {
         username.value = data.username
         email.value = data.email
         isGuestFlag.value = data.is_guest || false
+        // ── 新增：从服务器恢复资料字段，服务端数据优先 ──
+        if (data.display_name) displayName.value = data.display_name
+        if (data.avatar_url) avatarUrl.value = data.avatar_url
         isJoined.value = true
+        requestNotify()
       } else {
         sessionStorage.removeItem('voklowave-token')
         token.value = ''
@@ -64,13 +87,20 @@ const initAuth = async () => {
   initializing.value = false
 }
 
+// ── 请求桌面通知权限 ──
+const requestNotify = () => {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission()
+  }
+}
+
 initAuth()
 
 /**
  * 全局认证与设置状态管理
  *
  * 模块级 ref 保证跨组件共享一份数据，无需 provide/inject。
- * 提供 login / register / verifyEmail / guest / logout 等方法。
+ * 提供 login / register / verifyEmail / guest / logout / updateProfile 等方法。
  */
 export function useAppState() {
 
@@ -116,7 +146,11 @@ export function useAppState() {
         username.value = data.username
         email.value = loginEmail
         isGuestFlag.value = data.is_guest || false
+        // ── 新增：登录时同步资料字段 ──
+        if (data.display_name) displayName.value = data.display_name
+        if (data.avatar_url) avatarUrl.value = data.avatar_url
         isJoined.value = true
+        requestNotify()  // 新增：登录时请求通知权限
         return { ok: true }
       }
       const body = await res.text()
@@ -195,19 +229,46 @@ export function useAppState() {
         token.value = data.token
         username.value = data.username
         isGuestFlag.value = true
+        currentChannel.value = 'general'  // 访客强制回到 general 频道
         isJoined.value = true
+        requestNotify()  // 新增：访客登录时请求通知权限
         return { ok: true }
       } else {
-        authError.value = '快速体验生成失败，请重试'
-        return { ok: false, error: '快速体验失败' }
+        const body = await res.text()
+        authError.value = body || '访客登录失败'
+        return { ok: false, error: body || '访客登录失败' }
       }
-    } catch (err) {
+    } catch {
       authError.value = '网络错误，请检查连接'
       return { ok: false, error: '网络错误' }
     }
   }
 
-  /** 忘记密码：发送重置验证码到邮箱 */
+  /** 退出登录：清除认证状态但保留主题偏好 */
+  const logout = () => {
+    token.value = ''
+    username.value = ''
+    email.value = ''
+    isGuestFlag.value = false
+    isJoined.value = false
+    displayName.value = ''      // 新增
+    avatarUrl.value = ''        // 新增
+    bio.value = ''              // 新增
+    currentChannel.value = 'general'   // 新增：退出时重置频道，防止下次登录残留旧频道
+    sessionStorage.removeItem('voklowave-token')
+    sessionStorage.removeItem('voklowave-channel')
+    sessionStorage.removeItem('voklowave-display-name')   // 新增
+    sessionStorage.removeItem('voklowave-avatar-url')     // 新增
+  }
+
+  /** 切换当前频道 */
+  const switchChannel = (name) => {
+    currentChannel.value = name
+  }
+
+  // ── 新增：忘记密码流程 ──
+  const mode = ref('login')
+
   const forgotPassword = async (targetEmail) => {
     authError.value = ''
     try {
@@ -226,7 +287,6 @@ export function useAppState() {
     }
   }
 
-  /** 重置密码：提交验证码 + 新密码 */
   const resetPassword = async (targetEmail, code, newPassword) => {
     authError.value = ''
     try {
@@ -245,19 +305,36 @@ export function useAppState() {
     }
   }
 
-  /** 登出：清除全部状态回到登录页 */
-  const logout = () => {
-    token.value = ''
-    username.value = ''
-    email.value = ''
-    isGuestFlag.value = false
-    isJoined.value = false
-    currentChannel.value = 'general'
-  }
-
-  /** 切换当前频道 */
-  const switchChannel = (channel) => {
-    currentChannel.value = channel
+  // ── 新增：用户资料编辑 ──
+  /**
+   * 更新当前用户的个人资料。
+   * @param {Object} fields - { display_name?, avatar_url?, bio? } 仅传要更新的字段
+   */
+  const saveProfile = async (fields) => {
+    authError.value = ''
+    try {
+      const res = await fetch('/api/me', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token.value}`,
+        },
+        body: JSON.stringify(fields),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        displayName.value = data.display_name || ''
+        avatarUrl.value = data.avatar_url || ''
+        bio.value = data.bio || ''
+        return { ok: true, data }
+      }
+      const body = await res.text()
+      authError.value = body
+      return { ok: false, error: body }
+    } catch {
+      authError.value = '网络错误，请检查连接'
+      return { ok: false, error: '网络错误' }
+    }
   }
 
   return {
@@ -270,17 +347,23 @@ export function useAppState() {
     showCreateModal,
     authError,
     initializing,
-    isGuest,
     pendingEmail,
-    login,
+    isGuest,
+    // ── 新增：资料字段 ──
+    displayName,
+    avatarUrl,
+    bio,
+    mode,
     register,
+    login,
     verifyEmail,
     resendVerification,
     join,
+    quickExperience,
     logout,
     switchChannel,
-    quickExperience,
     forgotPassword,
-    resetPassword
+    resetPassword,
+    saveProfile,  // 新增
   }
 }

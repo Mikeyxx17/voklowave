@@ -43,7 +43,12 @@ pub async fn create_channel(
     .await;
 
     match result {
-        Ok(_) => {
+        Ok(r) => {
+            // ── 检查是否实际插入了行（rows_affected = 0 意味着名字已存在） ──
+            if r.rows_affected() == 0 {
+                return (StatusCode::CONFLICT, "该频道名称已被使用").into_response();
+            }
+
             state.channels.entry(input.name.clone()).or_insert_with(|| {
                 let (tx, _rx) = tokio::sync::broadcast::channel(100);
                 tx

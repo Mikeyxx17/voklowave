@@ -11,9 +11,10 @@ use crate::models::{
 };
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use std::net::SocketAddr;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Message, SmtpTransport, Transport};
@@ -80,8 +81,13 @@ fn send_verification_email(to_email: String, code: String) {
 /// 注册新账号：校验域名白名单、输入长度、密码哈希，写入数据库并发送验证邮件。
 pub async fn register(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(input): Json<RegisterInput>,
 ) -> impl IntoResponse {
+    // ── 注册限流检查 ──
+    if let Err(resp) = state.register_limiter.check(addr) {
+        return resp.into_response();
+    }
     let parts: Vec<&str> = input.email.split('@').collect();
     let email_domain = match parts.get(1) {
         Some(domain) => *domain,
@@ -163,8 +169,13 @@ pub async fn register(
 /// 邮箱+密码登录：bcrypt 验密，返回 JWT（7 天有效）。未验证邮箱返回 403。
 pub async fn login(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(input): Json<LoginInput>,
 ) -> impl IntoResponse {
+    // ── 登录限流检查 ──
+    if let Err(resp) = state.login_limiter.check(addr) {
+        return resp.into_response();
+    }
     let user_result = sqlx::query_as!(
         User,
         "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified FROM users WHERE email = $1",
@@ -316,8 +327,13 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
 /// 重新发送邮箱验证码（每日最多 3 次，60 秒冷却）。
 pub async fn resend_verification(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(input): Json<ResendVerifyInput>,
 ) -> impl IntoResponse {
+    // ── 重发验证码限流检查 ──
+    if let Err(resp) = state.resend_limiter.check(addr) {
+        return resp.into_response();
+    }
     let user_row = sqlx::query!(
         "SELECT is_verified FROM users WHERE email = $1",
         input.email

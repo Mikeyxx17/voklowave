@@ -90,43 +90,53 @@
 
       <!-- 用户信息 -->
       <div class="px-4 py-3">
-        <div class="flex items-center gap-3">
+        <!-- ── 新增：整个用户区可点击，打开资料编辑弹窗 ── -->
+        <div class="flex items-center gap-3 cursor-pointer hover:bg-base-100/50 rounded-lg p-1.5 -m-1.5 transition-colors" @click="profileModal?.open()">
           <div class="avatar placeholder shrink-0">
             <div class="w-8 rounded-full !rounded-btn text-xs font-bold text-white" :style="{ background: avatarBg }">
+              <!-- ── 新增：有头像链接时显示图片 ── -->
+              <img v-if="avatarUrl" :src="avatarUrl" class="w-full h-full object-cover !rounded-btn" @error="avatarUrl = ''" />
               {{ username ? username.charAt(0).toUpperCase() : '?' }}
             </div>
           </div>
           <div class="min-w-0 flex-1">
-            <p class="text-xs font-semibold text-base-content truncate">{{ username || '未登录' }}</p>
+            <!-- ── 新增：优先显示昵称，回退用户名 ── -->
+            <p class="text-xs font-semibold text-base-content truncate">{{ displayName || username || '未登录' }}</p>
+            <p v-if="bio" class="text-[10px] text-base-content/40 truncate mt-0.5">{{ bio }}</p>
             <p class="text-[10px] text-success/80 flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-success" />
               在线
             </p>
           </div>
-          <button
-            v-if="token"
-            class="btn btn-ghost btn-xs text-base-content/40 hover:text-error shrink-0"
-            title="退出登录"
-            @click="logout"
-          >
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-            </svg>
-          </button>
         </div>
+        <!-- ── 退出按钮移到用户区下方，独立点击 ── -->
+        <button
+          v-if="token"
+          class="btn btn-ghost btn-xs text-base-content/30 hover:text-error mt-1.5 w-full justify-center"
+          title="退出登录"
+          @click="logout"
+        >退出登录</button>
       </div>
     </div>
 
+    <!-- ── 资料编辑弹窗（Teleport 到 body，避免影响侧边栏布局） ── -->
+    <Teleport to="body">
+      <ProfileEditModal ref="profileModal" />
+    </Teleport>
   </aside>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useAppState } from '../composables/useAppState'
 import { useChannels } from '../composables/useChannels'
+import ProfileEditModal from './ProfileEditModal.vue'
 
-const { username, token, currentChannel, theme, switchChannel, showCreateModal, logout, isGuest } = useAppState()
+const { username, token, currentChannel, theme, switchChannel, showCreateModal, logout, isGuest, displayName, avatarUrl, bio } = useAppState()
 const { channels, loading } = useChannels()
+
+// ── 新增：资料编辑弹窗引用 ──
+const profileModal = ref(null)
 
 const selectChannel = (name) => {
   const toggle = document.getElementById('sidebar-toggle')

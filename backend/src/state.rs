@@ -1,22 +1,40 @@
-//! 全局应用状态：持有 PostgreSQL 连接池和频道内存广播字典。
+// 全局应用状态 — 数据库连接池 + 频道内存字典 + 控制事件通道
 
 use crate::models::ChatMessage;
+use crate::services::rate_limit::RateLimiter;  // 新增
 use dashmap::DashMap;
+use serde::Serialize;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// 应用全局共享状态，axum 通过 `State` 提取器注入到每个 handler。
+/// WebSocket 控制事件（消息删除等），通过独立的 broadcast channel 下发。
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum ControlEvent {
+    #[serde(rename = "message_deleted")]
+    MessageDeleted { message_id: i32 },
+    /// 表情回应切换事件（added / removed）
+    #[serde(rename = "reaction_toggled")]
+    ReactionToggled {
+        message_id: i32,
+        emoji: String,
+        username: String,
+        action: String, // "added" | "removed"
+    },
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    /// 数据库连接池
     pub db: PgPool,
-    /// 频道名 → broadcast::Sender 的并发安全映射
     pub channels: Arc<DashMap<String, broadcast::Sender<ChatMessage>>>,
+    pub control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,
+    pub login_limiter: RateLimiter,      // 新增：登录限流
+    pub register_limiter: RateLimiter,   // 新增：注册限流
+    pub resend_limiter: RateLimiter,     // 新增：重发验证码限流
 }
 
 impl AppState {
-    /// 获取或创建指定频道的广播发送器：先查内存缓存，未命中则持久化到数据库并创建新通道。
     pub async fn get_or_create_channel(&self, name: String) -> broadcast::Sender<ChatMessage> {
         if let Some(channel) = self.channels.get(&name) {
             return channel.clone();
@@ -40,5 +58,16 @@ impl AppState {
             .clone();
 
         tx
+    }
+
+    /// 获取或创建频道的控制事件广播通道。
+    pub fn get_or_create_control_channel(&self, name: &str) -> broadcast::Sender<ControlEvent> {
+        self.control_channels
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let (tx, _rx) = broadcast::channel(100);
+                tx
+            })
+            .clone()
     }
 }

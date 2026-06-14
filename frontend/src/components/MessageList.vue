@@ -25,7 +25,9 @@
         </div>
 
         <!-- 普通消息 -->
-        <MessageBubble v-else :message="msg" :isMine="msg.username === username" />
+        <div v-else :data-msg-id="msg.id">
+          <MessageBubble :message="msg" :isMine="msg.username === username" @delete="handleDelete" />
+        </div>
       </template>
 
       <div ref="bottom" class="h-2" />
@@ -40,10 +42,27 @@ import { useWebSocket } from '../composables/useWebSocket'
 import MessageBubble from './MessageBubble.vue'
 
 const { username, currentChannel } = useAppState()
-const { messages } = useWebSocket()
+const { messages, deleteMessage, scrollToId } = useWebSocket()
 const container = ref(null)
 const bottom = ref(null)
 let sticky = true
+
+// ── 新增：消息删除处理 ──
+const handleDelete = (messageId) => { deleteMessage(messageId) }
+
+// ── 新增：搜索跳转 — 滚动到指定消息 ──
+watch(scrollToId, async (targetId) => {
+  if (targetId == null) return
+  await nextTick()
+  const el = container.value?.querySelector(`[data-msg-id="${targetId}"]`)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.style.transition = 'background 0.5s'
+    el.style.background = 'oklch(var(--p) / 0.15)'
+    setTimeout(() => { el.style.background = '' }, 1500)
+  }
+  scrollToId.value = null
+})
 
 // 滚到底部
 const goBottom = () => {
