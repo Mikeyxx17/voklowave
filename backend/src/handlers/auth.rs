@@ -14,6 +14,7 @@ use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use tracing::{error, info, warn};
 use std::net::SocketAddr;
 use jsonwebtoken::{EncodingKey, Header, encode};
 use lettre::transport::smtp::authentication::Credentials;
@@ -32,14 +33,14 @@ fn send_verification_email(to_email: String, code: String) {
         let from_address = match format!("voklowave 验证邮件 <{}>", username).parse() {
             Ok(addr) => addr,
             Err(e) => {
-                println!("❌ [邮件服务] 发件人邮箱格式解析失败: {}", e);
+                error!("邮件服务：发件人邮箱格式解析失败: {}", e);
                 return;
             }
         };
         let to_address = match to_email.parse() {
             Ok(addr) => addr,
             Err(e) => {
-                println!("❌ [邮件服务] 收件人邮箱格式解析失败: {}", e);
+                error!("邮件服务：收件人邮箱格式解析失败: {}", e);
                 return;
             }
         };
@@ -54,7 +55,7 @@ fn send_verification_email(to_email: String, code: String) {
             )) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("❌ [邮件服务] 构建邮件内容失败: {}", e);
+                    error!("邮件服务：构建邮件内容失败: {}", e);
                     return;
                 }
             };
@@ -62,7 +63,7 @@ fn send_verification_email(to_email: String, code: String) {
         let mailer_builder = match SmtpTransport::relay(&smtp_server) {
             Ok(b) => b,
             Err(e) => {
-                println!("❌ [邮件服务] 连接 SMTP 服务器失败: {}", e);
+                error!("邮件服务：连接 SMTP 服务器失败: {}", e);
                 return;
             }
         };
@@ -72,8 +73,8 @@ fn send_verification_email(to_email: String, code: String) {
             .build();
 
         match mailer.send(&email_content) {
-            Ok(_) => println!("✅ [邮件服务] 成功为用户 {} 发送验证码邮件！", to_email),
-            Err(e) => println!("❌ [邮件服务] 发信被拒绝或网络超时，详细错误: {:?}", e),
+            Ok(_) => info!("邮件服务：成功发送验证码邮件至 {}", to_email),
+            Err(e) => error!("邮件服务：发送失败: {}", e),
         }
     });
 }
@@ -124,7 +125,7 @@ pub async fn register(
     let hashed_password = match bcrypt::hash(&input.password, 10) {
         Ok(h) => h,
         Err(e) => {
-            println!("密码哈希失败: {}", e);
+            error!("密码哈希失败: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "服务器内部错误").into_response();
         }
     };
@@ -153,6 +154,11 @@ pub async fn register(
             .await;
 
             send_verification_email(input.email.clone(), verify_code);
+            info!(
+                username = %input.username,
+                email = %input.email,
+                "用户注册成功"
+            );
             (
                 StatusCode::CREATED,
                 "注册成功，请前往邮箱查收 6 位激活验证码",
@@ -160,7 +166,7 @@ pub async fn register(
                 .into_response()
         }
         Err(e) => {
-            println!("注册失败，数据库查重未通过: {:?}", e);
+            warn!("注册失败，用户名或邮箱已被占用: {}", e);
             (StatusCode::CONFLICT, "用户名或邮箱已被占用").into_response()
         }
     }
@@ -178,7 +184,7 @@ pub async fn login(
     }
     let user_result = sqlx::query_as!(
         User,
-        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified FROM users WHERE email = $1",
+        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, token_version FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
@@ -198,6 +204,39 @@ pub async fn login(
                 }
 
                 let exp = (chrono::Utc::now() + chrono::Duration::days(7)).timestamp() as usize;
+                let jti = uuid::Uuid::new_v4().to_string();
+                let login_ip = addr.ip().to_string();
+
+                // ── 检测其他活跃会话（不同 IP = 可能的新设备） ──
+                let other_sessions = sqlx::query_scalar!(
+                    "SELECT ip_address FROM sessions \
+                     WHERE user_id = $1 AND is_active = TRUE AND ip_address IS NOT NULL AND ip_address != $2",
+                    user.id,
+                    login_ip
+                )
+                .fetch_all(&state.db)
+                .await
+                .ok()
+                .unwrap_or_default();
+
+                if !other_sessions.is_empty() {
+                    warn!(
+                        user_id = user.id,
+                        ip = %login_ip,
+                        existing_ips = ?other_sessions,
+                        "检测到新 IP 登录，可能存在新设备登录"
+                    );
+                }
+
+                // ── 写入会话记录 ──
+                let _ = sqlx::query!(
+                    "INSERT INTO sessions (user_id, jti, ip_address) VALUES ($1, $2, $3)",
+                    user.id,
+                    jti,
+                    login_ip
+                )
+                .execute(&state.db)
+                .await;
 
                 let my_claims = Claims {
                     sub: user.id,
@@ -205,24 +244,19 @@ pub async fn login(
                     username: user.username.clone(),
                     is_guest: false,
                     exp,
+                    token_version: user.token_version,
+                    jti,
                 };
 
-                let secret_string = match std::env::var("JWT_SECRET") {
-                    Ok(s) => s,
-                    Err(_) => {
-                        eprintln!(
-                            "⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。"
-                        );
-                        "development_fallback_secret_key_look_out".to_string()
-                    }
-                };
+                let secret_string = std::env::var("JWT_SECRET")
+                    .expect("JWT_SECRET 环境变量未设置");
 
                 let encoding_key = EncodingKey::from_secret(secret_string.as_bytes());
 
                 let token = match encode(&Header::default(), &my_claims, &encoding_key) {
                     Ok(t) => t,
                     Err(err) => {
-                        println!("JWT 签发失败: {}", err);
+                        error!("JWT 签发失败: {}", err);
                         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                     }
                 };
@@ -235,6 +269,11 @@ pub async fn login(
                     is_guest: false,
                 };
 
+                info!(
+                    user_id = user.id,
+                    email = %user.email,
+                    "用户登录成功"
+                );
                 (StatusCode::OK, Json(response_body)).into_response()
             } else {
                 (StatusCode::UNAUTHORIZED, "邮箱或密码错误").into_response()
@@ -242,19 +281,31 @@ pub async fn login(
         }
         Ok(None) => (StatusCode::UNAUTHORIZED, "账户未注册").into_response(),
         Err(e) => {
-            println!("登录查询数据库失败: {}", e);
+            error!("登录查询数据库失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
 
-/// 获取当前登录用户基本信息（页面刷新恢复会话）。
-pub async fn get_current_user(user: AuthUser) -> impl IntoResponse {
+/// 获取当前登录用户完整资料（页面刷新恢复会话 + 资料字段同步）。
+pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> impl IntoResponse {
+    let profile = sqlx::query!(
+        "SELECT display_name, avatar_url, bio FROM users WHERE id = $1",
+        user.user_id
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
     let response_body = MeResponse {
         id: user.user_id,
         username: user.username,
         email: user.email,
         is_guest: user.is_guest,
+        display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
+        avatar_url: profile.as_ref().and_then(|p| p.avatar_url.clone()),
+        bio: profile.as_ref().and_then(|p| p.bio.clone()),
     };
     (StatusCode::OK, Json(response_body))
 }
@@ -280,6 +331,16 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
     match user_row {
         Ok(row) => {
             let exp = (chrono::Utc::now() + chrono::Duration::days(1)).timestamp() as usize;
+            let jti = uuid::Uuid::new_v4().to_string();
+
+            // 写入访客会话记录
+            let _ = sqlx::query!(
+                "INSERT INTO sessions (user_id, jti) VALUES ($1, $2)",
+                row.id,
+                jti
+            )
+            .execute(&state.db)
+            .await;
 
             let my_claims = Claims {
                 sub: row.id,
@@ -287,17 +348,12 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                 username: guest_username.clone(),
                 is_guest: true,
                 exp,
+                token_version: 1,
+                jti,
             };
 
-            let secret_string = match std::env::var("JWT_SECRET") {
-                Ok(s) => s,
-                Err(_) => {
-                    eprintln!(
-                        "⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。"
-                    );
-                    "development_fallback_secret_key_look_out".to_string()
-                }
-            };
+            let secret_string = std::env::var("JWT_SECRET")
+                .expect("JWT_SECRET 环境变量未设置");
             let encoding_key = EncodingKey::from_secret(secret_string.as_bytes());
 
             match encode(&Header::default(), &my_claims, &encoding_key) {
@@ -312,13 +368,13 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                     (StatusCode::OK, Json(response_body)).into_response()
                 }
                 Err(err) => {
-                    println!("访客 JWT 签发失败: {}", err);
+                    error!("访客 JWT 签发失败: {}", err);
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 }
             }
         }
         Err(e) => {
-            println!("创建访客数据库记录失败: {}", e);
+            error!("创建访客数据库记录失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -350,7 +406,7 @@ pub async fn resend_verification(
         }
         Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
-            println!("查询用户失败: {:?}", e);
+            error!("resend: 查询用户失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
@@ -410,7 +466,7 @@ pub async fn resend_verification(
             (StatusCode::OK, "验证码已重新发送，请查收邮箱").into_response()
         }
         Err(e) => {
-            println!("重新发送验证码数据库更新失败: {:?}", e);
+            error!("重新发送验证码数据库更新失败: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "操作失败，请稍后重试").into_response()
         }
     }
@@ -436,7 +492,7 @@ pub async fn verify_email(
         }
         Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
-            println!("查询验证状态失败: {:?}", e);
+            error!("verify_email: 查询验证状态失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
@@ -452,7 +508,7 @@ pub async fn verify_email(
         Ok(Some(row)) => row,
         Ok(None) => return (StatusCode::BAD_REQUEST, "验证码不存在，请重新注册").into_response(),
         Err(e) => {
-            println!("查询验证码失败: {:?}", e);
+            error!("查询验证码失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -469,7 +525,7 @@ pub async fn verify_email(
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
-            println!("开启事务失败: {:?}", e);
+            error!("verify_email: 开启事务失败: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "激活失败，请稍后重试").into_response();
         }
     };
@@ -491,15 +547,17 @@ pub async fn verify_email(
     match (user_update, vc_delete) {
         (Ok(_), Ok(_)) => {
             if let Err(e) = tx.commit().await {
-                println!("提交事务失败: {:?}", e);
+                error!("verify_email: 提交事务失败: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, "激活失败，请稍后重试").into_response();
             }
+            info!(email = %input.email, "邮箱验证成功");
             (StatusCode::OK, "账号激活成功！现在您可以正常登录了").into_response()
         }
         (err_user, err_vc) => {
-            println!(
-                "激活失败，user_update: {:?}, vc_delete: {:?}",
-                err_user, err_vc
+            error!(
+                ?err_user,
+                ?err_vc,
+                "verify_email: 激活失败"
             );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -517,14 +575,14 @@ fn send_password_reset_email(to_email: String, code: String) {
         let from_address = match format!("voklowave 安全中心 <{}>", username).parse() {
             Ok(addr) => addr,
             Err(e) => {
-                println!("❌ [邮件服务] 发件人邮箱格式解析失败: {}", e);
+                error!("邮件服务：发件人邮箱格式解析失败: {}", e);
                 return;
             }
         };
         let to_address = match to_email.parse() {
             Ok(addr) => addr,
             Err(e) => {
-                println!("❌ [邮件服务] 收件人邮箱格式解析失败: {}", e);
+                error!("邮件服务：收件人邮箱格式解析失败: {}", e);
                 return;
             }
         };
@@ -539,7 +597,7 @@ fn send_password_reset_email(to_email: String, code: String) {
             )) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("❌ [邮件服务] 构建邮件内容失败: {}", e);
+                    error!("邮件服务：构建邮件内容失败: {}", e);
                     return;
                 }
             };
@@ -547,7 +605,7 @@ fn send_password_reset_email(to_email: String, code: String) {
         let mailer_builder = match SmtpTransport::relay(&smtp_server) {
             Ok(b) => b,
             Err(e) => {
-                println!("❌ [邮件服务] 连接 SMTP 服务器失败: {}", e);
+                error!("邮件服务：连接 SMTP 服务器失败: {}", e);
                 return;
             }
         };
@@ -557,8 +615,8 @@ fn send_password_reset_email(to_email: String, code: String) {
             .build();
 
         match mailer.send(&email_content) {
-            Ok(_) => println!("✅ [邮件服务] 成功为用户 {} 发送密码重置邮件！", to_email),
-            Err(e) => println!("❌ [邮件服务] 发信被拒绝或网络超时，详细错误: {:?}", e),
+            Ok(_) => info!("邮件服务：成功发送密码重置邮件至 {}", to_email),
+            Err(e) => error!("邮件服务：密码重置邮件发送失败: {}", e),
         }
     });
 }
@@ -566,8 +624,13 @@ fn send_password_reset_email(to_email: String, code: String) {
 /// 发送密码重置验证码：生成 6 位数字，写入 verification_codes 表并发送邮件。
 pub async fn forgot_password(
     State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(input): Json<ForgotPasswordInput>,
 ) -> impl IntoResponse {
+    // ── 忘记密码限流检查 ──
+    if let Err(resp) = state.forgot_password_limiter.check(addr) {
+        return resp.into_response();
+    }
     let user_row = sqlx::query!("SELECT email FROM users WHERE email = $1", input.email)
         .fetch_optional(&state.db)
         .await;
@@ -578,7 +641,7 @@ pub async fn forgot_password(
             return (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response();
         }
         Err(e) => {
-            println!("查询用户失败: {:?}", e);
+            error!("forgot_password: 查询用户失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -608,7 +671,7 @@ pub async fn forgot_password(
             (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response()
         }
         Err(e) => {
-            println!("写入密码重置验证码失败: {:?}", e);
+            error!("写入密码重置验证码失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -635,7 +698,7 @@ pub async fn reset_password(
         Ok(Some(_)) => {}
         Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
-            println!("查询用户失败: {:?}", e);
+            error!("resend: 查询用户失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
@@ -657,7 +720,7 @@ pub async fn reset_password(
                 .into_response();
         }
         Err(e) => {
-            println!("查询重置验证码失败: {:?}", e);
+            error!("查询重置验证码失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -674,7 +737,7 @@ pub async fn reset_password(
     let hashed_password = match bcrypt::hash(&input.new_password, 10) {
         Ok(h) => h,
         Err(e) => {
-            println!("密码哈希失败: {}", e);
+            error!("密码哈希失败: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "服务器内部错误").into_response();
         }
     };
@@ -682,13 +745,13 @@ pub async fn reset_password(
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
-            println!("开启事务失败: {:?}", e);
+            error!("reset_password: 开启事务失败: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, "重置失败，请稍后重试").into_response();
         }
     };
 
     let pw_update = sqlx::query!(
-        "UPDATE users SET password_hash = $1 WHERE email = $2",
+        "UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE email = $2",
         hashed_password,
         input.email
     )
@@ -705,15 +768,17 @@ pub async fn reset_password(
     match (pw_update, vc_delete) {
         (Ok(_), Ok(_)) => {
             if let Err(e) = tx.commit().await {
-                println!("提交事务失败: {:?}", e);
+                error!("reset_password: 提交事务失败: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, "重置失败，请稍后重试").into_response();
             }
+            info!(email = %input.email, "密码重置成功");
             (StatusCode::OK, "密码重置成功，请使用新密码登录").into_response()
         }
         (err_pw, err_vc) => {
-            println!(
-                "密码重置失败，pw_update: {:?}, vc_delete: {:?}",
-                err_pw, err_vc
+            error!(
+                ?err_pw,
+                ?err_vc,
+                "reset_password: 密码重置失败"
             );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }

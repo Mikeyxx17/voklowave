@@ -109,20 +109,34 @@
             </p>
           </div>
         </div>
-        <!-- ── 退出按钮移到用户区下方，独立点击 ── -->
+        <!-- ── 活跃会话按钮（访客不显示） ── -->
+        <button
+          v-if="token && !isGuest"
+          class="btn btn-ghost btn-xs text-base-content/30 hover:text-base-content/60 mt-2 w-full justify-center"
+          title="管理活跃会话"
+          @click="showSessionModal = true"
+        >
+          <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          活跃会话
+        </button>
+
+        <!-- ── 退出按钮 ── -->
         <button
           v-if="token"
-          class="btn btn-ghost btn-xs text-base-content/30 hover:text-error mt-1.5 w-full justify-center"
+          class="btn btn-ghost btn-xs text-base-content/30 hover:text-error mt-1 w-full justify-center"
           title="退出登录"
-          @click="logout"
+          @click="confirmLogout"
         >退出登录</button>
       </div>
     </div>
 
-    <!-- ── 资料编辑弹窗（Teleport 到 body，避免影响侧边栏布局） ── -->
-    <Teleport to="body">
-      <ProfileEditModal ref="profileModal" />
-    </Teleport>
+    <!-- ── 资料编辑弹窗 ── -->
+    <ProfileEditModal ref="profileModal" />
+
+    <!-- ── 会话管理弹窗 ── -->
+    <SessionListModal :show="showSessionModal" @close="showSessionModal = false" />
   </aside>
 </template>
 
@@ -131,12 +145,19 @@ import { computed, ref } from 'vue'
 import { useAppState } from '../composables/useAppState'
 import { useChannels } from '../composables/useChannels'
 import ProfileEditModal from './ProfileEditModal.vue'
+import SessionListModal from './SessionListModal.vue'
 
 const { username, token, currentChannel, theme, switchChannel, showCreateModal, logout, isGuest, displayName, avatarUrl, bio } = useAppState()
 const { channels, loading } = useChannels()
 
-// ── 新增：资料编辑弹窗引用 ──
 const profileModal = ref(null)
+const showSessionModal = ref(false)
+
+const confirmLogout = () => {
+  if (confirm('确定要退出登录吗？')) {
+    logout()
+  }
+}
 
 const selectChannel = (name) => {
   const toggle = document.getElementById('sidebar-toggle')

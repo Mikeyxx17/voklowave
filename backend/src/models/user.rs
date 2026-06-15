@@ -22,6 +22,7 @@ pub struct User {
     pub is_guest: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub is_verified: bool,
+    pub token_version: i32,
 }
 
 /// 登录请求体。
@@ -41,13 +42,16 @@ pub struct AuthResponse {
     pub is_guest: bool,
 }
 
-/// `GET /api/me` 响应：当前用户基本信息。
+/// `GET /api/me` 响应：当前用户完整资料。
 #[derive(serde::Serialize)]
 pub struct MeResponse {
     pub id: i32,
     pub username: String,
     pub email: String,
     pub is_guest: bool,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub bio: Option<String>,
 }
 
 /// 邮箱验证请求体。

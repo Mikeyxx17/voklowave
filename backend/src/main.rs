@@ -17,8 +17,8 @@ use dashmap::DashMap;
 use dotenvy::dotenv;
 use handlers::{
     create_channel, delete_message, forgot_password, get_channels, get_current_user, guest_login,
-    login, register, resend_verification, reset_password, search_messages, toggle_reaction,
-    list_users, update_profile, verify_email, ws_handler,
+    login, list_sessions, register, resend_verification, reset_password, revoke_session,
+    search_messages, toggle_reaction, list_users, update_profile, verify_email, ws_handler,
 };
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
@@ -27,11 +27,17 @@ use std::net::SocketAddr;  // 新增：用于 ConnectInfo
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::info;
 
 /// 应用主入口：依次初始化数据库、后台任务、频道缓存、CORS、路由，然后绑定端口启动。
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
     dotenv().ok();
+
+    // ── 启动时强制校验 JWT_SECRET，防止生产环境遗忘配置导致使用 fallback 密钥 ──
+    let _ = std::env::var("JWT_SECRET")
+        .expect("❌ 致命错误：未设置 JWT_SECRET 环境变量！请在 .env 中配置安全的随机密钥。");
 
     let database_url = env::var("DATABASE_URL").expect("请在 .env 文件中设置 DATABASE_URL");
 
@@ -61,9 +67,10 @@ async fn main() {
         db: pool.clone(),
         channels,
         control_channels,  // 新增
-        login_limiter: services::rate_limit::login_limiter(),       // 新增
-        register_limiter: services::rate_limit::register_limiter(), // 新增
-        resend_limiter: services::rate_limit::resend_limiter(),     // 新增
+        login_limiter: services::rate_limit::login_limiter(),                   // 新增
+        register_limiter: services::rate_limit::register_limiter(),             // 新增
+        resend_limiter: services::rate_limit::resend_limiter(),                 // 新增
+        forgot_password_limiter: services::rate_limit::forgot_password_limiter(), // 新增
     };
 
     // 从数据库加载已有频道，为每个频道创建广播通道
@@ -88,7 +95,7 @@ async fn main() {
         max_age_hours,
     ));
 
-    println!("已成功加载 {} 个频道", state.channels.len());
+    info!("已成功加载 {} 个频道", state.channels.len());
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -114,12 +121,15 @@ async fn main() {
         .route("/api/messages/search", get(search_messages))
         // ── 表情回应：POST 切换表情反应 ──
         .route("/api/messages/{id}/react", post(toggle_reaction))
+        // ── 会话管理：列表 & 踢出 ──
+        .route("/api/sessions", get(list_sessions))
+        .route("/api/sessions/{id}", delete(revoke_session))
         .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 
-    println!("后端引擎已就绪：http://{}", listener.local_addr().unwrap());
+    info!("后端引擎已就绪：http://{}", listener.local_addr().unwrap());
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }

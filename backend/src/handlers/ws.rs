@@ -13,9 +13,7 @@ use axum::http::StatusCode;
 use axum::{extract::State, response::IntoResponse};
 use futures::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, Validation, decode};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static FALLBACK_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
+use tracing::{error, info, warn};
 
 /// WebSocket 连接 URL 查询参数（`?token=`）。
 #[derive(serde::Deserialize)]
@@ -35,15 +33,8 @@ pub async fn ws_handler(
         None => return (StatusCode::UNAUTHORIZED, "缺少认证令牌").into_response(),
     };
 
-    let secret_string = match std::env::var("JWT_SECRET") {
-        Ok(s) => s,
-        Err(_) => {
-            if !FALLBACK_SECRET_WARNED.swap(true, Ordering::Relaxed) {
-                eprintln!("⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。");
-            }
-            "development_fallback_secret_key_look_out".to_string()
-        }
-    };
+    let secret_string = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET 环境变量未设置");
 
     let token_data = match decode::<Claims>(
         &token,
@@ -52,10 +43,53 @@ pub async fn ws_handler(
     ) {
         Ok(data) => data,
         Err(err) => {
-            println!("[WS验票失败] 门票非法或已过期: {:?}", err);
+            warn!("WebSocket 令牌验票失败: {}", err);
             return (StatusCode::UNAUTHORIZED, "认证令牌无效或已过期").into_response();
         }
     };
+
+    // 校验 token_version：改密码后旧 WebSocket 连接自动失效
+    let current_version = sqlx::query_scalar!(
+        "SELECT token_version FROM users WHERE id = $1",
+        token_data.claims.sub
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    match current_version {
+        None => return (StatusCode::UNAUTHORIZED, "用户不存在").into_response(),
+        Some(db_version) if db_version != token_data.claims.token_version => {
+            warn!(
+                user_id = token_data.claims.sub,
+                token_ver = token_data.claims.token_version,
+                db_ver = db_version,
+                "WS Token 版本不匹配，令牌已失效"
+            );
+            return (StatusCode::UNAUTHORIZED, "认证令牌已失效，请重新登录").into_response();
+        }
+        _ => {}
+    }
+
+    // 校验会话是否仍然有效（被踢出则拒绝 WebSocket 连接）
+    let session_active = sqlx::query_scalar!(
+        "SELECT is_active FROM sessions WHERE jti = $1",
+        token_data.claims.jti
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    if session_active == Some(false) {
+        warn!(
+            user_id = token_data.claims.sub,
+            jti = %token_data.claims.jti,
+            "WS 会话已被踢出"
+        );
+        return (StatusCode::UNAUTHORIZED, "会话已被终止").into_response();
+    }
 
     let user = AuthUser {
         user_id: token_data.claims.sub,
@@ -96,6 +130,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
     let mut rx = tx.subscribe();
     let mut crx = control_tx.subscribe();  // 新增：控制事件订阅
 
+    info!(
+        user = %user.username,
+        channel = %channel_name,
+        "WebSocket 连接建立"
+    );
+
     // ── 1. 下发墓碑列表（防止重连后遗留幽灵消息） ──
     let deletions = sqlx::query_scalar!(
         "SELECT id FROM deleted_messages WHERE channel = $1 AND deleted_at > NOW() - INTERVAL '1 hour'",
@@ -125,6 +165,35 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
         for msg in msgs {
             if let Ok(json) = serde_json::to_string(&msg) {
                 if sender.send(Message::Text(json.into())).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+
+    // ── 2.5 下发已有表情回应（防止新上线客户端看不到历史反应） ──
+    {
+        let reactions = sqlx::query!(
+            "SELECT r.message_id, r.username, r.emoji \
+             FROM message_reactions r \
+             JOIN messages m ON m.id = r.message_id \
+             WHERE m.channel = $1 \
+             ORDER BY m.id DESC LIMIT 300",
+            channel_name
+        )
+        .fetch_all(&state.db)
+        .await;
+
+        if let Ok(rows) = reactions {
+            for row in rows {
+                let event = serde_json::json!({
+                    "type": "reaction_toggled",
+                    "message_id": row.message_id,
+                    "emoji": row.emoji,
+                    "username": row.username,
+                    "action": "added"
+                });
+                if sender.send(Message::Text(event.to_string().into())).await.is_err() {
                     return;
                 }
             }
@@ -178,10 +247,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                                             parsed_msg.created_at = Some(chrono::Utc::now());
                                             let _ = tx.send(parsed_msg);
                                         }
-                                        Err(e) => println!("数据库写入失败: {}", e),
+                                        Err(e) => error!("消息写入数据库失败: {}", e),
                                     }
                                 }
-                                Err(e) => println!("解析失败: {}", e),
+                                Err(e) => warn!("消息 JSON 解析失败: {}", e),
                             }
                         }
                     }

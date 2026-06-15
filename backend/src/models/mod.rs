@@ -2,10 +2,12 @@
 
 pub mod channel;
 pub mod message;
+pub mod session;
 pub mod user;
 
 pub use channel::{Channel, CreateChannelInput};
 pub use message::ChatMessage;
+pub use session::Session;
 pub use user::{
     AuthResponse, ForgotPasswordInput, LoginInput, MeResponse, RegisterInput,
     ResendVerifyInput, ResetPasswordInput, User, VerifyEmailInput,

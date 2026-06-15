@@ -5,6 +5,7 @@ pub mod channels;
 pub mod messages;   // 新增：消息硬删除（含墓碑表）
 pub mod profile;    // 新增：用户资料编辑
 pub mod reactions;  // 新增：表情回应
+pub mod sessions; // 新增：会话管理
 pub mod ws;
 
 pub use auth::{
@@ -15,4 +16,5 @@ pub use channels::{create_channel, get_channels};
 pub use messages::{delete_message, search_messages};    // 新增
 pub use profile::{list_users, update_profile};     // 新增
 pub use reactions::toggle_reaction;  // 新增
+pub use sessions::{list_sessions, revoke_session}; // 新增
 pub use ws::ws_handler;

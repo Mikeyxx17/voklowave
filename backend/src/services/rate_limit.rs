@@ -8,6 +8,7 @@ use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// 限流器：为不同路由预设不同的规则。
 #[derive(Clone)]
@@ -52,6 +53,12 @@ impl RateLimiter {
         entry.retain(|t| *t > cutoff);
 
         if entry.len() >= self.max_requests {
+            warn!(
+                ip = %ip,
+                max = self.max_requests,
+                window_secs = self.window.as_secs(),
+                "IP 触发限流"
+            );
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 format!("请求过于频繁，请 {} 秒后再试", self.window.as_secs()),
@@ -75,5 +82,10 @@ pub fn register_limiter() -> RateLimiter {
 
 /// 重发验证码限流：每 IP 每小时最多 5 次
 pub fn resend_limiter() -> RateLimiter {
+    RateLimiter::new(5, 3600)
+}
+
+/// 忘记密码限流：每 IP 每小时最多 5 次（防邮件轰炸）
+pub fn forgot_password_limiter() -> RateLimiter {
     RateLimiter::new(5, 3600)
 }

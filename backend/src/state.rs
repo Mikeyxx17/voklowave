@@ -29,9 +29,10 @@ pub struct AppState {
     pub db: PgPool,
     pub channels: Arc<DashMap<String, broadcast::Sender<ChatMessage>>>,
     pub control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,
-    pub login_limiter: RateLimiter,      // 新增：登录限流
-    pub register_limiter: RateLimiter,   // 新增：注册限流
-    pub resend_limiter: RateLimiter,     // 新增：重发验证码限流
+    pub login_limiter: RateLimiter,             // 新增：登录限流
+    pub register_limiter: RateLimiter,          // 新增：注册限流
+    pub resend_limiter: RateLimiter,            // 新增：重发验证码限流
+    pub forgot_password_limiter: RateLimiter,   // 新增：忘记密码限流
 }
 
 impl AppState {

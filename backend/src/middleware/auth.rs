@@ -7,9 +7,7 @@ use axum::{
 };
 use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static FALLBACK_SECRET_WARNED: AtomicBool = AtomicBool::new(false);
+use tracing::warn;
 
 /// JWT 令牌载荷，包含用户标识、邮箱、用户名、访客标记和过期时间。
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,6 +17,10 @@ pub struct Claims {
     pub username: String,
     pub is_guest: bool,
     pub exp: usize,
+    /// 签发时的 token 版本号，改密码后递增，旧 token 自动失效
+    pub token_version: i32,
+    /// JWT 唯一标识（jti），用于会话管理和踢出
+    pub jti: String,
 }
 
 /// 通过 JWT 校验后的用户身份，handler 中直接声明该参数即可触发认证。
@@ -54,15 +56,8 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let token = &auth_header[7..];
 
-        let secret_string = match std::env::var("JWT_SECRET") {
-            Ok(s) => s,
-            Err(_) => {
-                if !FALLBACK_SECRET_WARNED.swap(true, Ordering::Relaxed) {
-                    eprintln!("⚠ [安全警告] 未设置 JWT_SECRET 环境变量，使用了硬编码 fallback 密钥！请在生产环境立即配置。");
-                }
-                "development_fallback_secret_key_look_out".to_string()
-            }
-        };
+        let secret_string = std::env::var("JWT_SECRET")
+            .expect("JWT_SECRET 环境变量未设置");
 
         let token_data = decode::<Claims>(
             token,
@@ -72,7 +67,51 @@ impl FromRequestParts<AppState> for AuthUser {
 
         match token_data {
             Ok(data) => {
+                // 校验 token_version：对比数据库当前版本，不一致则令牌已失效（密码已改）
+                let current_version = sqlx::query_scalar!(
+                    "SELECT token_version FROM users WHERE id = $1",
+                    data.claims.sub
+                )
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+
+                match current_version {
+                    None => return Err(StatusCode::UNAUTHORIZED),
+                    Some(db_version) if db_version != data.claims.token_version => {
+                        warn!(
+                            user_id = data.claims.sub,
+                            token_ver = data.claims.token_version,
+                            db_ver = db_version,
+                            "Token 版本不匹配，令牌已失效"
+                        );
+                        return Err(StatusCode::UNAUTHORIZED);
+                    }
+                    _ => {}
+                }
+
+                // 校验会话是否仍然有效（被踢出的会话 is_active = false）
+                let session_active = sqlx::query_scalar!(
+                    "SELECT is_active FROM sessions WHERE jti = $1",
+                    data.claims.jti
+                )
+                .fetch_optional(&state.db)
+                .await
+                .ok()
+                .flatten();
+
+                if session_active == Some(false) {
+                    warn!(
+                        user_id = data.claims.sub,
+                        jti = %data.claims.jti,
+                        "会话已被踢出"
+                    );
+                    return Err(StatusCode::UNAUTHORIZED);
+                }
+
                 if data.claims.is_guest {
+                    // 访客额外检查：是否已被清理
                     let exists = sqlx::query_scalar!(
                         r#"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1) as "exists!""#,
                         data.claims.sub
@@ -94,7 +133,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 })
             }
             Err(err) => {
-                println!("[验票失败] 令牌非法或已过期: {:?}", err);
+                warn!("JWT 验票失败: {}", err);
                 Err(StatusCode::UNAUTHORIZED)
             }
         }

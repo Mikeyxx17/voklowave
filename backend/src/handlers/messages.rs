@@ -10,6 +10,7 @@
 use crate::middleware::auth::AuthUser;
 use crate::state::{AppState, ControlEvent};
 use axum::Json;
+use tracing::{error, info};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -37,7 +38,7 @@ pub async fn delete_message(
         Ok(Some(m)) => m,
         Ok(None) => return (StatusCode::NOT_FOUND, "消息不存在").into_response(),
         Err(e) => {
-            println!("[消息删除] 查询消息失败: {:?}", e);
+            error!("消息删除：查询消息失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -51,7 +52,7 @@ pub async fn delete_message(
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
         Err(e) => {
-            println!("[消息删除] 开启事务失败: {:?}", e);
+            error!("消息删除：开启事务失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -73,7 +74,7 @@ pub async fn delete_message(
     match (del_result, tomb_result) {
         (Ok(_), Ok(_)) => {
             if let Err(e) = tx.commit().await {
-                println!("[消息删除] 提交事务失败: {:?}", e);
+                error!("消息删除：提交事务失败: {}", e);
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
 
@@ -83,17 +84,20 @@ pub async fn delete_message(
                 message_id,
             });
 
-            println!(
-                "[消息删除] 用户 {} 删除了频道 {} 中的消息 id={}",
-                user.username, msg.channel, message_id
+            info!(
+                user = %user.username,
+                channel = %msg.channel,
+                msg_id = message_id,
+                "消息已删除"
             );
 
             StatusCode::NO_CONTENT.into_response()
         }
         (err_del, err_tomb) => {
-            println!(
-                "[消息删除] 操作失败，del: {:?}, tomb: {:?}",
-                err_del, err_tomb
+            error!(
+                ?err_del,
+                ?err_tomb,
+                "消息删除：操作失败"
             );
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
@@ -244,6 +248,14 @@ pub async fn search_messages(
                 })
                 .collect();
 
+            let count = results.len();
+            info!(
+                keyword = %q,
+                channel = ?channel_filter,
+                total,
+                count,
+                "消息搜索"
+            );
             (StatusCode::OK, Json(serde_json::json!({
                 "results": results,
                 "total": total,
@@ -253,7 +265,7 @@ pub async fn search_messages(
                 .into_response()
         }
         Err(e) => {
-            println!("[消息搜索] 查询失败: {:?}", e);
+            error!("消息搜索：查询失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

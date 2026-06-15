@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use std::sync::Arc;              // 新增
 use std::time::Duration;
 use tokio::sync::broadcast;      // 新增
+use tracing::{debug, error, info};
 
 /// 启动后台清理任务，定期清理过期访客和过期墓碑记录。
 ///
@@ -21,9 +22,9 @@ pub async fn spawn_cleanup_task(
     interval_secs: u64,
     max_age_hours: u64,
 ) {
-    println!(
-        "🚀 后台清理任务已启动，检查间隔 {} 秒",
-        interval_secs
+    info!(
+        interval_secs,
+        "后台清理任务已启动"
     );
 
     tokio::spawn(async move {
@@ -31,7 +32,7 @@ pub async fn spawn_cleanup_task(
 
         loop {
             ticker.tick().await;
-            println!("🧹 开始执行清理...");
+            info!("开始执行清理...");
 
             // ── 步骤 1：事务外先查出将被删除的消息（不锁定，不阻塞） ──
             let doomed: Vec<(i32, String)> = sqlx::query_as(
@@ -46,11 +47,17 @@ pub async fn spawn_cleanup_task(
             .await
             .unwrap_or_default();
 
+            if doomed.is_empty() {
+                debug!("清理任务：无需清理的访客");
+                cleanup_tombstones(&pool).await;
+                continue;
+            }
+
             // ── 步骤 2：开启事务，执行物理删除 ──
             let mut tx = match pool.begin().await {
                 Ok(transaction) => transaction,
                 Err(e) => {
-                    println!("❌ 开启清理事务失败: {}", e);
+                    error!("开启清理事务失败: {}", e);
                     cleanup_tombstones(&pool).await;
                     continue;
                 }
@@ -80,12 +87,12 @@ pub async fn spawn_cleanup_task(
             match (msg_result, user_result) {
                 (Ok(msg_rows), Ok(user_rows)) => {
                     if let Err(e) = tx.commit().await {
-                        println!("❌ 提交清理事务失败: {}", e);
+                        error!("提交清理事务失败: {}", e);
                     } else {
-                        println!(
-                            "✅ 访客清理完成：删除 {} 个访客、{} 条消息",
-                            user_rows.rows_affected(),
-                            msg_rows.rows_affected()
+                        info!(
+                            guests = %user_rows.rows_affected(),
+                            messages = %msg_rows.rows_affected(),
+                            "访客清理完成"
                         );
 
                         // ── 步骤 3：事务提交成功后，广播删除事件给在线客户端 ──
@@ -98,17 +105,18 @@ pub async fn spawn_cleanup_task(
                             }
                         }
                         if !doomed.is_empty() {
-                            println!(
-                                "📡 已向在线客户端广播 {} 条访客消息删除事件",
-                                doomed.len()
+                            info!(
+                                count = doomed.len(),
+                                "已向在线客户端广播访客消息删除事件"
                             );
                         }
                     }
                 }
                 (err_msg, err_user) => {
-                    println!(
-                        "❌ 访客清理出错，事务已回滚。消息: {:?}, 用户: {:?}",
-                        err_msg, err_user
+                    error!(
+                        ?err_msg,
+                        ?err_user,
+                        "访客清理出错，事务已回滚"
                     );
                 }
             }
@@ -132,9 +140,9 @@ async fn cleanup_tombstones(pool: &PgPool) {
         Ok(result) => {
             let rows = result.rows_affected();
             if rows > 0 {
-                println!("🧹 墓碑清理：删除了 {} 条过期记录", rows);
+                info!(rows, "墓碑清理：删除了过期记录");
             }
         }
-        Err(e) => println!("❌ 墓碑清理失败: {:?}", e),
+        Err(e) => error!("墓碑清理失败: {}", e),
     }
 }

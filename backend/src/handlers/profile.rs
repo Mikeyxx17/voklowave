@@ -3,6 +3,7 @@
 use crate::middleware::auth::AuthUser;
 use crate::state::AppState;
 use axum::Json;
+use tracing::{error, info};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -52,10 +53,11 @@ pub async fn list_users(
                     "display_name": r.display_name,
                 }))
                 .collect();
+            info!(keyword = %keyword, "用户搜索");
             (StatusCode::OK, Json(serde_json::json!(results))).into_response()
         }
         Err(e) => {
-            println!("[用户搜索] 失败: {:?}", e);
+            error!("用户搜索失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -98,21 +100,24 @@ pub async fn update_profile(
     .await;
 
     match result {
-        Ok(row) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "id": row.id,
-                "username": row.username,
-                "email": row.email,
-                "display_name": row.display_name,
-                "avatar_url": row.avatar_url,
-                "bio": row.bio,
-                "is_guest": row.is_guest,
-            })),
-        )
-            .into_response(),
+        Ok(row) => {
+            info!(user_id = user.user_id, "用户资料已更新");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "id": row.id,
+                    "username": row.username,
+                    "email": row.email,
+                    "display_name": row.display_name,
+                    "avatar_url": row.avatar_url,
+                    "bio": row.bio,
+                    "is_guest": row.is_guest,
+                })),
+            )
+                .into_response()
+        }
         Err(e) => {
-            println!("更新用户资料失败: {:?}", e);
+            error!("更新用户资料失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

@@ -4,6 +4,7 @@ use crate::middleware::auth::AuthUser;
 use crate::models::{Channel, CreateChannelInput};
 use crate::state::AppState;
 use axum::Json;
+use tracing::{error, info, warn};
 use axum::extract::State;
 use axum::{http::StatusCode, response::IntoResponse};
 
@@ -46,6 +47,7 @@ pub async fn create_channel(
         Ok(r) => {
             // ── 检查是否实际插入了行（rows_affected = 0 意味着名字已存在） ──
             if r.rows_affected() == 0 {
+                warn!(channel = %input.name, user = %user.username, "频道名已被占用");
                 return (StatusCode::CONFLICT, "该频道名称已被使用").into_response();
             }
 
@@ -54,17 +56,17 @@ pub async fn create_channel(
                 tx
             });
 
-            println!(
-                "用户 {} 创建频道 {} 成功，当前共 {} 个频道",
-                user.username,
-                input.name,
-                state.channels.len()
+            info!(
+                user = %user.username,
+                channel = %input.name,
+                total = state.channels.len(),
+                "频道创建成功"
             );
 
             StatusCode::CREATED.into_response()
         }
         Err(e) => {
-            println!("用户 {} 创建频道 {} 失败: {}", user.username, input.name, e);
+            error!("用户 {} 创建频道 {} 失败: {}", user.username, input.name, e);
             StatusCode::BAD_REQUEST.into_response()
         }
     }

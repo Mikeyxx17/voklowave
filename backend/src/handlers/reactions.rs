@@ -8,6 +8,7 @@
 use crate::middleware::auth::AuthUser;
 use crate::state::{AppState, ControlEvent};
 use axum::Json;
+use tracing::{error, warn};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -44,9 +45,12 @@ pub async fn toggle_reaction(
 
     let channel = match msg {
         Ok(Some(m)) => m.channel,
-        Ok(None) => return (StatusCode::NOT_FOUND, "消息不存在").into_response(),
+        Ok(None) => {
+            warn!(msg_id = message_id, "表情回应：消息不存在");
+            return (StatusCode::NOT_FOUND, "消息不存在").into_response();
+        }
         Err(e) => {
-            println!("[表情回应] 查询消息失败: {:?}", e);
+            error!("表情回应：查询消息失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
@@ -109,7 +113,7 @@ pub async fn toggle_reaction(
             }
         }
         Err(e) => {
-            println!("[表情回应] INSERT 失败: {:?}", e);
+            error!("表情回应：INSERT 失败: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
