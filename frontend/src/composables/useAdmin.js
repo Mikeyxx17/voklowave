@@ -1,0 +1,35 @@
+import { useAppState } from './useAppState'
+
+const BASE = '/api/admin'
+
+/** 通用请求封装 */
+async function api(path, options = {}) {
+  const { token } = useAppState()
+  const res = await fetch(`${BASE}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token.value}`,
+      ...options.headers,
+    },
+    ...options,
+  })
+  const text = await res.text()
+  let data = null
+  try { data = JSON.parse(text) } catch { data = text }
+  if (!res.ok) throw new Error(typeof data === 'string' ? data : JSON.stringify(data))
+  return data
+}
+
+export function useAdmin() {
+  return {
+    dashboard:  ()                    => api('/dashboard'),
+    listUsers:  (q = '', page = 0)    => api(`/users?q=${encodeURIComponent(q)}&page=${page}`),
+    deleteUser: (id)                  => api(`/users/${id}`, { method: 'DELETE' }),
+    toggleAdmin:(id)                  => api(`/users/${id}/toggle-admin`, { method: 'PATCH' }),
+    listChannels:()                   => api('/channels'),
+    deleteChannel:(id)                => api(`/channels/${id}`, { method: 'DELETE' }),
+    auditMessages:(q = '', page = 0)  => api(`/messages?q=${encodeURIComponent(q)}&page=${page}`),
+    deleteMessage:(id)                => api(`/messages/${id}`, { method: 'DELETE' }),
+    auditLogs:   (page = 0)           => api(`/audit-logs?page=${page}`),
+  }
+}

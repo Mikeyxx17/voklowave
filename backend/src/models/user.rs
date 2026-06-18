@@ -22,6 +22,7 @@ pub struct User {
     pub is_guest: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub is_verified: bool,
+    pub is_admin: bool,
     pub token_version: i32,
 }
 
@@ -40,6 +41,7 @@ pub struct AuthResponse {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub is_guest: bool,
+    pub is_admin: bool,
 }
 
 /// `GET /api/me` 响应：当前用户完整资料。
@@ -49,6 +51,7 @@ pub struct MeResponse {
     pub username: String,
     pub email: String,
     pub is_guest: bool,
+    pub is_admin: bool,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub bio: Option<String>,

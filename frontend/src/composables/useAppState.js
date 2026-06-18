@@ -12,6 +12,7 @@ const authError = ref('')
 const initializing = ref(true)
 const pendingEmail = ref('')
 const isGuestFlag = ref(false)
+const isAdminFlag = ref(false)
 
 // ── 新增：用户资料字段 ──
 const displayName = ref('')
@@ -20,6 +21,8 @@ const bio = ref('')
 
 // 是否为访客账号
 const isGuest = computed(() => isGuestFlag.value)
+// 是否为管理员
+const isAdmin = computed(() => isAdminFlag.value)
 
 // 主题变更 → localStorage + <html data-theme>
 watch(theme, (val) => {
@@ -72,6 +75,7 @@ const initAuth = async () => {
         username.value = data.username
         email.value = data.email
         isGuestFlag.value = data.is_guest || false
+        isAdminFlag.value = data.is_admin || false
         // ── 新增：从服务器恢复资料字段，服务端数据优先 ──
         if (data.display_name) displayName.value = data.display_name
         if (data.avatar_url) avatarUrl.value = data.avatar_url
@@ -149,8 +153,10 @@ export function useAppState() {
         // ── 新增：登录时同步资料字段 ──
         if (data.display_name) displayName.value = data.display_name
         if (data.avatar_url) avatarUrl.value = data.avatar_url
+        isAdminFlag.value = data.is_admin || false
         isJoined.value = true
-        requestNotify()  // 新增：登录时请求通知权限
+        requestNotify()
+        window.location.hash = '/'
         return { ok: true }
       }
       const body = await res.text()
@@ -229,9 +235,10 @@ export function useAppState() {
         token.value = data.token
         username.value = data.username
         isGuestFlag.value = true
-        currentChannel.value = 'general'  // 访客强制回到 general 频道
+        currentChannel.value = 'general'
         isJoined.value = true
-        requestNotify()  // 新增：访客登录时请求通知权限
+        requestNotify()
+        window.location.hash = '/'
         return { ok: true }
       } else {
         const body = await res.text()
@@ -258,7 +265,8 @@ export function useAppState() {
     sessionStorage.removeItem('voklowave-token')
     sessionStorage.removeItem('voklowave-channel')
     sessionStorage.removeItem('voklowave-display-name')   // 新增
-    sessionStorage.removeItem('voklowave-avatar-url')     // 新增
+    sessionStorage.removeItem('voklowave-avatar-url')
+    window.location.hash = '/login'
   }
 
   /** 切换当前频道 */
@@ -353,6 +361,7 @@ export function useAppState() {
     displayName,
     avatarUrl,
     bio,
+    isAdmin,
     mode,
     register,
     login,

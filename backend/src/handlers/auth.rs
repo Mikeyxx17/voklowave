@@ -30,6 +30,11 @@ fn send_verification_email(to_email: String, code: String) {
         let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
         let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
 
+        if username.is_empty() || password.is_empty() {
+            error!("邮件服务：SMTP 认证信息未配置，无法发送验证邮件");
+            return;
+        }
+
         let from_address = match format!("voklowave 验证邮件 <{}>", username).parse() {
             Ok(addr) => addr,
             Err(e) => {
@@ -96,12 +101,13 @@ pub async fn register(
     };
 
     let allowed_domains_str = std::env::var("ALLOWED_DOMAINS").unwrap_or_default();
-    let is_allowed = allowed_domains_str
-        .split(',')
-        .any(|domain| domain.trim() == email_domain);
-
-    if !is_allowed {
-        return (StatusCode::FORBIDDEN, "该邮箱域名不在允许的注册白名单内").into_response();
+    if !allowed_domains_str.is_empty() {
+        let is_allowed = allowed_domains_str
+            .split(',')
+            .any(|domain| domain.trim() == email_domain);
+        if !is_allowed {
+            return (StatusCode::FORBIDDEN, "该邮箱域名不在允许的注册白名单内").into_response();
+        }
     }
 
     if input.username.len() < 3 || input.username.len() > 30 {
@@ -184,7 +190,7 @@ pub async fn login(
     }
     let user_result = sqlx::query_as!(
         User,
-        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, token_version FROM users WHERE email = $1",
+        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, is_admin, token_version FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
@@ -267,6 +273,7 @@ pub async fn login(
                     display_name: user.display_name,
                     avatar_url: user.avatar_url,
                     is_guest: false,
+                    is_admin: user.is_admin,
                 };
 
                 info!(
@@ -290,7 +297,7 @@ pub async fn login(
 /// 获取当前登录用户完整资料（页面刷新恢复会话 + 资料字段同步）。
 pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> impl IntoResponse {
     let profile = sqlx::query!(
-        "SELECT display_name, avatar_url, bio FROM users WHERE id = $1",
+        "SELECT display_name, avatar_url, bio, is_admin FROM users WHERE id = $1",
         user.user_id
     )
     .fetch_optional(&state.db)
@@ -303,6 +310,7 @@ pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> 
         username: user.username,
         email: user.email,
         is_guest: user.is_guest,
+        is_admin: profile.as_ref().map(|p| p.is_admin).unwrap_or(false),
         display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
         avatar_url: profile.as_ref().and_then(|p| p.avatar_url.clone()),
         bio: profile.as_ref().and_then(|p| p.bio.clone()),
@@ -364,6 +372,7 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                         display_name: None,
                         avatar_url: None,
                         is_guest: true,
+                        is_admin: false,
                     };
                     (StatusCode::OK, Json(response_body)).into_response()
                 }
@@ -572,6 +581,11 @@ fn send_password_reset_email(to_email: String, code: String) {
         let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
         let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
 
+        if username.is_empty() || password.is_empty() {
+            error!("邮件服务：SMTP 认证信息未配置，无法发送密码重置邮件");
+            return;
+        }
+
         let from_address = match format!("voklowave 安全中心 <{}>", username).parse() {
             Ok(addr) => addr,
             Err(e) => {
@@ -635,8 +649,8 @@ pub async fn forgot_password(
         .fetch_optional(&state.db)
         .await;
 
-    let user_exists = match user_row {
-        Ok(Some(_)) => true,
+    match user_row {
+        Ok(Some(_)) => {} // 用户存在，继续发送验证码
         Ok(None) => {
             return (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response();
         }
@@ -644,10 +658,6 @@ pub async fn forgot_password(
             error!("forgot_password: 查询用户失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-    };
-
-    if !user_exists {
-        return (StatusCode::OK, "如果该邮箱已注册，重置邮件已发送").into_response();
     }
 
     let reset_code = rand::rng().random_range(100000..1000000).to_string();
@@ -698,7 +708,7 @@ pub async fn reset_password(
         Ok(Some(_)) => {}
         Ok(None) => return (StatusCode::NOT_FOUND, "该邮箱尚未注册").into_response(),
         Err(e) => {
-            error!("resend: 查询用户失败: {}", e);
+            error!("reset_password: 查询用户失败: {}", e);
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }

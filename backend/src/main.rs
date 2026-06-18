@@ -11,11 +11,14 @@ mod state;
 
 use axum::{
     Router,
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
 };
 use dashmap::DashMap;
 use dotenvy::dotenv;
 use handlers::{
+    admin_audit_logs, admin_audit_messages, admin_dashboard, admin_delete_channel,
+    admin_delete_user, admin_force_delete_message, admin_list_channels, admin_list_users,
+    admin_toggle_admin,
     create_channel, delete_message, forgot_password, get_channels, get_current_user, guest_login,
     login, list_sessions, register, resend_verification, reset_password, revoke_session,
     search_messages, toggle_reaction, list_users, update_profile, verify_email, ws_handler,
@@ -124,6 +127,16 @@ async fn main() {
         // ── 会话管理：列表 & 踢出 ──
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", delete(revoke_session))
+        // ── 管理员后台 ──
+        .route("/api/admin/dashboard", get(admin_dashboard))
+        .route("/api/admin/users", get(admin_list_users))
+        .route("/api/admin/users/{id}", delete(admin_delete_user))
+        .route("/api/admin/users/{id}/toggle-admin", patch(admin_toggle_admin))
+        .route("/api/admin/channels", get(admin_list_channels))
+        .route("/api/admin/channels/{id}", delete(admin_delete_channel))
+        .route("/api/admin/messages", get(admin_audit_messages))
+        .route("/api/admin/messages/{id}", delete(admin_force_delete_message))
+        .route("/api/admin/audit-logs", get(admin_audit_logs))
         .layer(cors)
         .with_state(state);
 

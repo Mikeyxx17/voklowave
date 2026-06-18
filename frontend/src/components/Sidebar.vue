@@ -122,6 +122,13 @@
           活跃会话
         </button>
 
+        <!-- ── 管理后台入口（仅管理员可见） ── -->
+        <a
+          v-if="isAdmin"
+          href="/#/admin"
+          class="btn btn-primary btn-sm w-full justify-center mt-1"
+        >⚙️ 管理后台</a>
+
         <!-- ── 退出按钮 ── -->
         <button
           v-if="token"
@@ -147,7 +154,7 @@ import { useChannels } from '../composables/useChannels'
 import ProfileEditModal from './ProfileEditModal.vue'
 import SessionListModal from './SessionListModal.vue'
 
-const { username, token, currentChannel, theme, switchChannel, showCreateModal, logout, isGuest, displayName, avatarUrl, bio } = useAppState()
+const { username, token, currentChannel, theme, switchChannel, showCreateModal, logout, isGuest, displayName, avatarUrl, bio, isAdmin } = useAppState()
 const { channels, loading } = useChannels()
 
 const profileModal = ref(null)

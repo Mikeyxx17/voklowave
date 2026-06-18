@@ -1,12 +1,19 @@
 //! 后台服务任务：访客清理 + 墓碑清理 + WebSocket 广播通知。
 
-use crate::state::ControlEvent;  // 新增：控制事件类型
-use dashmap::DashMap;            // 新增
+use crate::state::ControlEvent;
+use dashmap::DashMap;
 use sqlx::PgPool;
-use std::sync::Arc;              // 新增
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;      // 新增
+use tokio::sync::broadcast;
 use tracing::{debug, error, info};
+
+/// 查询将被清理的访客消息时用的行映射结构体。
+#[derive(sqlx::FromRow)]
+struct DoomedMessage {
+    id: i32,
+    channel: String,
+}
 
 /// 启动后台清理任务，定期清理过期访客和过期墓碑记录。
 ///
@@ -18,7 +25,7 @@ use tracing::{debug, error, info};
 /// **墓碑清理**：删除超过 1 小时的墓碑记录。
 pub async fn spawn_cleanup_task(
     pool: PgPool,
-    control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,  // 新增：控制事件广播通道
+    control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,
     interval_secs: u64,
     max_age_hours: u64,
 ) {
@@ -35,14 +42,15 @@ pub async fn spawn_cleanup_task(
             info!("开始执行清理...");
 
             // ── 步骤 1：事务外先查出将被删除的消息（不锁定，不阻塞） ──
-            let doomed: Vec<(i32, String)> = sqlx::query_as(
+            let doomed: Vec<DoomedMessage> = sqlx::query_as!(
+                DoomedMessage,
                 "SELECT m.id, m.channel \
                  FROM messages m \
                  JOIN users u ON m.username = u.username \
                  WHERE u.is_guest = true \
-                 AND u.created_at < NOW() - ($1 || ' hours')::INTERVAL"
+                 AND u.created_at < NOW() - $1 * INTERVAL '1 hour'",
+                max_age_hours as i64
             )
-            .bind(max_age_hours as i64)
             .fetch_all(&pool)
             .await
             .unwrap_or_default();
@@ -65,22 +73,22 @@ pub async fn spawn_cleanup_task(
 
             let max_hours = max_age_hours as i64;
 
-            let msg_result = sqlx::query(
+            let msg_result = sqlx::query!(
                 "DELETE FROM messages USING users \
                 WHERE messages.username = users.username \
                 AND users.is_guest = true \
-                AND users.created_at < NOW() - ($1 || ' hours')::INTERVAL"
+                AND users.created_at < NOW() - $1 * INTERVAL '1 hour'",
+                max_hours as f64
             )
-            .bind(max_hours)
             .execute(&mut *tx)
             .await;
 
-            let user_result = sqlx::query(
+            let user_result = sqlx::query!(
                 "DELETE FROM users \
                 WHERE is_guest = true \
-                AND created_at < NOW() - ($1 || ' hours')::INTERVAL"
+                AND created_at < NOW() - $1 * INTERVAL '1 hour'",
+                max_hours as f64
             )
-            .bind(max_hours)
             .execute(&mut *tx)
             .await;
 
@@ -96,11 +104,10 @@ pub async fn spawn_cleanup_task(
                         );
 
                         // ── 步骤 3：事务提交成功后，广播删除事件给在线客户端 ──
-                        // 必须在事务外广播 —— 若事务回滚，消息还在，不该通知客户端
-                        for (msg_id, channel) in &doomed {
-                            if let Some(tx) = control_channels.get(channel) {
+                        for msg in &doomed {
+                            if let Some(tx) = control_channels.get(&msg.channel) {
                                 let _ = tx.send(ControlEvent::MessageDeleted {
-                                    message_id: *msg_id,
+                                    message_id: msg.id,
                                 });
                             }
                         }
@@ -131,8 +138,8 @@ pub async fn spawn_cleanup_task(
 /// 墓碑仅用于重连客户端同步删除事件，离线超过 1 小时的客户端重连时
 /// 回放的 50 条历史消息已不包含被删消息，墓碑无保留价值。
 async fn cleanup_tombstones(pool: &PgPool) {
-    match sqlx::query(
-        "DELETE FROM deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour'",
+    match sqlx::query!(
+        "DELETE FROM deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour'"
     )
     .execute(pool)
     .await

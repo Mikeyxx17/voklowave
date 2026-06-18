@@ -1,6 +1,6 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import katex from 'katex'
+import * as katex from 'katex'
 
 // ── 数学公式占位符 ──
 const MATH_PLACEHOLDER = '%%MATH%%'
