@@ -6,6 +6,7 @@
       <input v-model="search" @keyup.enter="fetch" placeholder="搜索消息内容..."
         class="input input-bordered flex-1 max-w-sm" />
       <button @click="fetch" class="btn btn-primary btn-sm">搜索</button>
+      <span class="text-xs text-base-content/40 self-center ml-2">🔴 实时监听中</span>
     </div>
 
     <div v-if="loading" class="text-center py-12"><span class="loading loading-spinner loading-lg"></span></div>
@@ -44,10 +45,12 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
+import { useAdminEvents } from '../../composables/useAdminEvents'
 
 const { auditMessages, deleteMessage } = useAdmin()
+const { lastEvent } = useAdminEvents()
 const messages = ref([])
 const total = ref(0)
 const page = ref(0)
@@ -55,6 +58,24 @@ const search = ref('')
 const loading = ref(false)
 const error = ref('')
 const deleting = ref(null)
+
+// 防抖定时器：收到事件后最多 2 秒刷新一次
+let refreshTimer = null
+
+watch(lastEvent, (ev) => {
+  if (!ev) return
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    // 仅在第一页且无搜索词时自动刷新（新消息出现在第一页）
+    if (page.value === 0 && !search.value) {
+      fetch()
+    }
+  }, 2000)
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+})
 
 const fetch = async () => {
   loading.value = true; error.value = ''

@@ -13,6 +13,7 @@ const initializing = ref(true)
 const pendingEmail = ref('')
 const isGuestFlag = ref(false)
 const isAdminFlag = ref(false)
+const isSuperAdminFlag = ref(false)
 
 // ── 新增：用户资料字段 ──
 const displayName = ref('')
@@ -23,6 +24,8 @@ const bio = ref('')
 const isGuest = computed(() => isGuestFlag.value)
 // 是否为管理员
 const isAdmin = computed(() => isAdminFlag.value)
+// 是否为超级管理员
+const isSuperAdmin = computed(() => isSuperAdminFlag.value)
 
 // 主题变更 → localStorage + <html data-theme>
 watch(theme, (val) => {
@@ -76,6 +79,7 @@ const initAuth = async () => {
         email.value = data.email
         isGuestFlag.value = data.is_guest || false
         isAdminFlag.value = data.is_admin || false
+        isSuperAdminFlag.value = data.is_superadmin || false
         // ── 新增：从服务器恢复资料字段，服务端数据优先 ──
         if (data.display_name) displayName.value = data.display_name
         if (data.avatar_url) avatarUrl.value = data.avatar_url
@@ -154,6 +158,7 @@ export function useAppState() {
         if (data.display_name) displayName.value = data.display_name
         if (data.avatar_url) avatarUrl.value = data.avatar_url
         isAdminFlag.value = data.is_admin || false
+        isSuperAdminFlag.value = data.is_superadmin || false
         isJoined.value = true
         requestNotify()
         window.location.hash = '/'
@@ -257,6 +262,8 @@ export function useAppState() {
     username.value = ''
     email.value = ''
     isGuestFlag.value = false
+    isAdminFlag.value = false
+    isSuperAdminFlag.value = false
     isJoined.value = false
     displayName.value = ''      // 新增
     avatarUrl.value = ''        // 新增
@@ -329,6 +336,10 @@ export function useAppState() {
         },
         body: JSON.stringify(fields),
       })
+      if (res.status === 401) {
+        logout()
+        return { ok: false, error: '登录已过期' }
+      }
       if (res.ok) {
         const data = await res.json()
         displayName.value = data.display_name || ''
@@ -362,6 +373,7 @@ export function useAppState() {
     avatarUrl,
     bio,
     isAdmin,
+    isSuperAdmin,
     mode,
     register,
     login,

@@ -35,15 +35,25 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
+import { useAdminEvents } from '../../composables/useAdminEvents'
 
 const { auditLogs } = useAdmin()
+const { lastEvent } = useAdminEvents()
 const logs = ref([])
 const total = ref(0)
 const page = ref(0)
 const loading = ref(false)
 const error = ref('')
+
+let refreshTimer = null
+watch(lastEvent, (ev) => {
+  if (!ev) return
+  if (refreshTimer) clearTimeout(refreshTimer)
+  // 任何管理操作都可能产生新的审计日志
+  refreshTimer = setTimeout(() => { if (page.value === 0) fetch() }, 1000)
+})
 
 const fetch = async () => {
   loading.value = true; error.value = ''

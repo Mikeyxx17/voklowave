@@ -4,7 +4,7 @@
 
 use crate::middleware::auth::{AuthUser, Claims};
 use crate::models::ChatMessage;
-use crate::state::AppState;
+use crate::state::{AppState, ControlEvent};
 use axum::extract::{
     Path, Query, WebSocketUpgrade as Ws,
     ws::{Message, WebSocket},
@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::{extract::State, response::IntoResponse};
 use futures::{sink::SinkExt, stream::StreamExt};
 use jsonwebtoken::{DecodingKey, Validation, decode};
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 /// WebSocket 连接 URL 查询参数（`?token=`）。
@@ -125,10 +126,12 @@ pub async fn ws_handler(
 async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String, user: AuthUser) {
     let tx = state.get_or_create_channel(channel_name.clone()).await;
     let control_tx = state.get_or_create_control_channel(&channel_name);  // 新增
+    let global_tx = state.global_events.clone();  // 新增：全局用户事件
 
     let (mut sender, mut receiver) = socket.split();
     let mut rx = tx.subscribe();
     let mut crx = control_tx.subscribe();  // 新增：控制事件订阅
+    let mut grx = global_tx.subscribe();   // 新增：全局事件订阅
 
     info!(
         user = %user.username,
@@ -245,6 +248,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                                         Ok(new_id) => {
                                             parsed_msg.id = Some(new_id);
                                             parsed_msg.created_at = Some(chrono::Utc::now());
+                                            // 广播 MessageCreated 到管理后台（先提取字段再 send，避免 clone）
+                                            let _ = state.admin_events.send(ControlEvent::MessageCreated {
+                                                message_id: new_id,
+                                                channel: channel_name.clone(),
+                                                username: user.username.clone(),
+                                            });
                                             let _ = tx.send(parsed_msg);
                                         }
                                         Err(e) => error!("消息写入数据库失败: {}", e),
@@ -277,6 +286,93 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
                             break;
                         }
                     }
+                }
+            }
+
+            // 分支 4：全局用户事件（UserDeleted 等 — 驱动前端自动登出）
+            global_result = grx.recv() => {
+                if let Ok(ControlEvent::UserDeleted { user_id }) = global_result {
+                    if user_id == user.user_id {
+                        let ev = serde_json::json!({"type":"user_deleted","user_id":user_id});
+                        let _ = sender.send(Message::Text(ev.to_string().into())).await;
+                        info!(user_id, username = %user.username, "用户被管理员删除，WebSocket 断开");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// WebSocket 管理后台实时推送：仅管理员可连接，订阅全局 admin_events 通道。
+pub async fn admin_ws_handler(
+    ws: Ws,
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>,
+) -> impl IntoResponse {
+    let token = match query.token {
+        Some(t) => t,
+        None => return (StatusCode::UNAUTHORIZED, "缺少认证令牌").into_response(),
+    };
+
+    let secret_string = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET 环境变量未设置");
+
+    let token_data = match decode::<Claims>(
+        &token,
+        &DecodingKey::from_secret(secret_string.as_bytes()),
+        &Validation::default(),
+    ) {
+        Ok(data) => data,
+        Err(err) => {
+            warn!("Admin WS 令牌验票失败: {}", err);
+            return (StatusCode::UNAUTHORIZED, "认证令牌无效或已过期").into_response();
+        }
+    };
+
+    // 必须为管理员
+    let is_admin = token_data.claims.is_admin
+        || sqlx::query_scalar!("SELECT is_admin FROM users WHERE id = $1", token_data.claims.sub)
+            .fetch_optional(&state.db).await.ok().flatten().unwrap_or(false);
+
+    if !is_admin {
+        return (StatusCode::FORBIDDEN, "仅管理员可连接管理后台推送").into_response();
+    }
+
+    ws.on_upgrade(|socket| handle_admin_socket(socket, state))
+}
+
+/// 管理后台 WebSocket 主循环：持续推送全局 admin_events 给前端。
+async fn handle_admin_socket(socket: WebSocket, state: AppState) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut arx = state.admin_events.subscribe();
+
+    info!("Admin WebSocket 连接建立");
+
+    loop {
+        tokio::select! {
+            // 接收 admin 事件并推送到前端
+            event = arx.recv() => {
+                match event {
+                    Ok(ev) => {
+                        if let Ok(json) = serde_json::to_string(&ev) {
+                            if sender.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "Admin WS 事件积压");
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+            // 客户端消息（主要是 ping 和关闭）
+            msg = receiver.next() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
                 }
             }
         }

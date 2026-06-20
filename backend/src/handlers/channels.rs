@@ -2,7 +2,7 @@
 
 use crate::middleware::auth::AuthUser;
 use crate::models::{Channel, CreateChannelInput};
-use crate::state::AppState;
+use crate::state::{AppState, ControlEvent};
 use axum::Json;
 use tracing::{error, info, warn};
 use axum::extract::State;
@@ -55,6 +55,11 @@ pub async fn create_channel(
                 let (tx, _rx) = tokio::sync::broadcast::channel(100);
                 tx
             });
+            // 同时创建控制事件通道
+            state.get_or_create_control_channel(&input.name);
+
+            // 广播给管理后台实时刷新
+            let _ = state.admin_events.send(ControlEvent::ChannelCreated { name: input.name.clone() });
 
             info!(
                 user = %user.username,

@@ -7,7 +7,7 @@
         <div class="card-body">
           <h3 class="font-bold text-lg">超级管理员信息</h3>
           <div class="text-sm space-y-2 mt-2">
-            <p><span class="text-base-content/60">用户名：</span> {{ SUPER_ADMIN }}</p>
+            <p><span class="text-base-content/60">用户名：</span> {{ username }}</p>
             <p><span class="text-base-content/60">角色：</span> Super Admin（超级管理员）</p>
             <p class="text-base-content/50">超级管理员账号在系统初始化时创建，不可注册、不可删除、不可降级。</p>
           </div>
@@ -18,7 +18,7 @@
         <div class="card-body">
           <h3 class="font-bold text-lg">管理员层级说明</h3>
           <div class="text-sm space-y-2 mt-2 text-base-content/70">
-            <p>🔴 <strong>超级管理员</strong>（{{ SUPER_ADMIN }}）：系统唯一，可升降普通管理员。</p>
+            <p>🔴 <strong>超级管理员</strong>（{{ username }}）：系统唯一，可升降普通管理员。</p>
             <p>🟡 <strong>普通管理员</strong>：由超级管理员授予，可管理用户/频道/消息，但不能升降其他管理员。</p>
             <p>⚪ <strong>普通用户</strong>：无管理权限。</p>
           </div>
@@ -40,9 +40,6 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
 import { useAppState } from '../../composables/useAppState'
-import { SUPER_ADMIN } from '../../config.js'
-const { username } = useAppState()
-const isSuperAdmin = computed(() => username.value === SUPER_ADMIN)
+const { username, isSuperAdmin } = useAppState()
 </script>

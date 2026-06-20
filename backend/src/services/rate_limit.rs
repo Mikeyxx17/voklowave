@@ -32,11 +32,12 @@ impl RateLimiter {
             let mut ticker = tokio::time::interval(Duration::from_secs(60));
             loop {
                 ticker.tick().await;
-                let cutoff = Instant::now() - window;
-                hits_clone.retain(|_, v: &mut Vec<Instant>| {
-                    v.retain(|t| *t > cutoff);
-                    !v.is_empty()
-                });
+                if let Some(cutoff) = Instant::now().checked_sub(window) {
+                    hits_clone.retain(|_, v: &mut Vec<Instant>| {
+                        v.retain(|t| *t > cutoff);
+                        !v.is_empty()
+                    });
+                }
             }
         });
 
@@ -47,10 +48,11 @@ impl RateLimiter {
     /// 在 handler 开头调用：`limiter.check(addr)?;`
     pub fn check(&self, ip: SocketAddr) -> Result<(), impl IntoResponse> {
         let now = Instant::now();
-        let cutoff = now - self.window;
-
         let mut entry = self.hits.entry(ip).or_default();
-        entry.retain(|t| *t > cutoff);
+
+        if let Some(cutoff) = now.checked_sub(self.window) {
+            entry.retain(|t| *t > cutoff);
+        }
 
         if entry.len() >= self.max_requests {
             warn!(

@@ -96,6 +96,12 @@ const connect = () => {
         if (idx !== -1) messages.value.splice(idx, 1)
         return
       }
+      // ── 新增：账号被管理员删除 → 强制登出 ──
+      if (msg.type === 'user_deleted') {
+        const { logout } = useAppState()
+        logout()
+        return
+      }
       // ── 新增：表情回应事件 ──
       if (msg.type === 'reaction_toggled') {
         const { message_id, emoji, action, username } = msg

@@ -1,3 +1,1 @@
-// 超级管理员配置
-// 与 backend/seed.sql 中的用户名保持同步
-export const SUPER_ADMIN = 'SuperAdmin'
+// 超级管理员由后端 is_superadmin 字段控制，前端不再硬编码用户名

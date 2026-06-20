@@ -83,6 +83,8 @@ pub async fn delete_message(
             let _ = control_tx.send(ControlEvent::MessageDeleted {
                 message_id,
             });
+            // 通知管理后台实时刷新
+            let _ = state.admin_events.send(ControlEvent::MessageDeleted { message_id });
 
             info!(
                 user = %user.username,

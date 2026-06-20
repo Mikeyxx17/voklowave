@@ -16,6 +16,7 @@ pub struct Claims {
     pub email: String,
     pub username: String,
     pub is_guest: bool,
+    pub is_admin: bool,
     pub exp: usize,
     /// 签发时的 token 版本号，改密码后递增，旧 token 自动失效
     pub token_version: i32,

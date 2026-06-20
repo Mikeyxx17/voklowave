@@ -23,6 +23,7 @@ pub struct User {
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub is_verified: bool,
     pub is_admin: bool,
+    pub is_superadmin: bool,
     pub token_version: i32,
 }
 
@@ -52,6 +53,7 @@ pub struct MeResponse {
     pub email: String,
     pub is_guest: bool,
     pub is_admin: bool,
+    pub is_superadmin: bool,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub bio: Option<String>,

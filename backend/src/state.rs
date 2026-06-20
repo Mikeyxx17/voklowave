@@ -14,6 +14,28 @@ use tokio::sync::broadcast;
 pub enum ControlEvent {
     #[serde(rename = "message_deleted")]
     MessageDeleted { message_id: i32 },
+    /// 新消息创建事件（管理后台实时更新用）
+    #[serde(rename = "message_created")]
+    MessageCreated {
+        message_id: i32,
+        channel: String,
+        username: String,
+    },
+    /// 新频道创建事件（管理后台实时更新用）
+    #[serde(rename = "channel_created")]
+    ChannelCreated { name: String },
+    /// 频道被删除事件（管理后台实时更新用）
+    #[serde(rename = "channel_deleted")]
+    ChannelDeleted { name: String },
+    /// 新用户注册/访客登录事件（管理后台实时更新用）
+    #[serde(rename = "user_created")]
+    UserCreated { username: String },
+    /// 用户被删除事件（管理后台实时更新用）
+    #[serde(rename = "user_deleted")]
+    UserDeleted { user_id: i32 },
+    /// 用户管理员身份切换事件（管理后台实时更新用）
+    #[serde(rename = "user_admin_toggled")]
+    UserAdminToggled { user_id: i32 },
     /// 表情回应切换事件（added / removed）
     #[serde(rename = "reaction_toggled")]
     ReactionToggled {
@@ -29,10 +51,14 @@ pub struct AppState {
     pub db: PgPool,
     pub channels: Arc<DashMap<String, broadcast::Sender<ChatMessage>>>,
     pub control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,
-    pub login_limiter: RateLimiter,             // 新增：登录限流
-    pub register_limiter: RateLimiter,          // 新增：注册限流
-    pub resend_limiter: RateLimiter,            // 新增：重发验证码限流
-    pub forgot_password_limiter: RateLimiter,   // 新增：忘记密码限流
+    /// 全局管理后台事件通道（消息创建/删除等，推送给 admin 页面实时刷新）
+    pub admin_events: broadcast::Sender<ControlEvent>,
+    /// 全局用户事件通道（UserDeleted 等推送给所有在线客户端，驱动前端自动登出）
+    pub global_events: broadcast::Sender<ControlEvent>,
+    pub login_limiter: RateLimiter,
+    pub register_limiter: RateLimiter,
+    pub resend_limiter: RateLimiter,
+    pub forgot_password_limiter: RateLimiter,
 }
 
 impl AppState {

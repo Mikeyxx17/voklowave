@@ -6,11 +6,12 @@
 --   3. 执行：psql -h localhost -U voklowave_user -d voklowave_database -f seed.sql
 -- ============================================================
 
-INSERT INTO users (username, email, password_hash, is_verified, is_admin, token_version)
+INSERT INTO users (username, email, password_hash, is_verified, is_admin, is_superadmin, token_version)
 VALUES (
     'SuperAdmin',                              -- ← 改这里：超级管理员用户名
     'micahxgenz@gmail.com',                    -- ← 改这里：用于找回密码
-    '$2b$10$DokE6e9WNdyDLFk/5ZZaWONCbijWU/slACAzid42ghJphQgwftedi',      -- ← 改这里：密码哈希
+    '$2b$10$CJ6MYFA3H4.e1KS7YIm.9uAk4KSXERZIUz4QuWlgUIFKz7/A5FUpO',      -- ← 改这里：密码哈希
+    true,
     true,
     true,
     1

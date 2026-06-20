@@ -19,6 +19,7 @@ use handlers::{
     admin_audit_logs, admin_audit_messages, admin_dashboard, admin_delete_channel,
     admin_delete_user, admin_force_delete_message, admin_list_channels, admin_list_users,
     admin_toggle_admin,
+    admin_ws_handler,
     create_channel, delete_message, forgot_password, get_channels, get_current_user, guest_login,
     login, list_sessions, register, resend_verification, reset_password, revoke_session,
     search_messages, toggle_reaction, list_users, update_profile, verify_email, ws_handler,
@@ -62,18 +63,22 @@ async fn main() {
         .map(|s| s.parse::<u64>().unwrap_or(24))
         .unwrap_or(24);
 
-    // ── 初始化：聊天频道 + 控制事件频道 ──
+    // ── 初始化：聊天频道 + 控制事件频道 + 管理后台全局事件通道 ──
     let channels = Arc::new(DashMap::new());
-    let control_channels = Arc::new(DashMap::new());  // 新增：控制事件广播通道
+    let control_channels = Arc::new(DashMap::new());
+    let (admin_events_tx, _) = broadcast::channel(256);
+    let (global_events_tx, _) = broadcast::channel(256);
 
     let state = AppState {
         db: pool.clone(),
         channels,
-        control_channels,  // 新增
-        login_limiter: services::rate_limit::login_limiter(),                   // 新增
-        register_limiter: services::rate_limit::register_limiter(),             // 新增
-        resend_limiter: services::rate_limit::resend_limiter(),                 // 新增
-        forgot_password_limiter: services::rate_limit::forgot_password_limiter(), // 新增
+        control_channels,
+        admin_events: admin_events_tx,
+        global_events: global_events_tx,
+        login_limiter: services::rate_limit::login_limiter(),
+        register_limiter: services::rate_limit::register_limiter(),
+        resend_limiter: services::rate_limit::resend_limiter(),
+        forgot_password_limiter: services::rate_limit::forgot_password_limiter(),
     };
 
     // 从数据库加载已有频道，为每个频道创建广播通道
@@ -107,6 +112,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/ws/{channel}", get(ws_handler))
+        .route("/ws/admin", get(admin_ws_handler))
         .route("/api/channels", get(get_channels).post(create_channel))
         .route("/api/login", post(login))
         .route("/api/register", post(register))

@@ -16,9 +16,10 @@
               <td>{{ c.msg_count }}</td>
               <td class="text-sm text-base-content/50">{{ fmt(c.created_at) }}</td>
               <td>
-                <button @click="delChannel(c)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === c.id">
+                <button v-if="isSuperAdmin" @click="delChannel(c)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === c.id">
                   删除
                 </button>
+                <span v-else class="text-xs text-base-content/30">—</span>
               </td>
             </tr>
           </tbody>
@@ -29,14 +30,26 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
+import { useAdminEvents } from '../../composables/useAdminEvents'
+import { useAppState } from '../../composables/useAppState'
 
 const { listChannels, deleteChannel } = useAdmin()
+const { isSuperAdmin } = useAppState()
+const { lastEvent } = useAdminEvents()
 const channels = ref([])
 const loading = ref(false)
 const error = ref('')
 const deleting = ref(null)
+
+let refreshTimer = null
+watch(lastEvent, (ev) => {
+  if (!ev) return
+  if (ev.type !== 'channel_created' && ev.type !== 'channel_deleted') return
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => fetch(), 1000)
+})
 
 const fetch = async () => {
   loading.value = true; error.value = ''

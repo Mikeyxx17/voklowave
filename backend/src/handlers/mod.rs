@@ -23,4 +23,4 @@ pub use messages::{delete_message, search_messages};
 pub use profile::{list_users, update_profile};
 pub use reactions::toggle_reaction;
 pub use sessions::{list_sessions, revoke_session};
-pub use ws::ws_handler;
+pub use ws::{admin_ws_handler, ws_handler};

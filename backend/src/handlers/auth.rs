@@ -9,7 +9,7 @@ use crate::models::{
     AuthResponse, ForgotPasswordInput, LoginInput, RegisterInput, ResendVerifyInput,
     ResetPasswordInput, User,
 };
-use crate::state::AppState;
+use crate::state::{AppState, ControlEvent};
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
@@ -165,6 +165,8 @@ pub async fn register(
                 email = %input.email,
                 "用户注册成功"
             );
+            // 通知管理后台实时刷新用户列表
+            let _ = state.admin_events.send(ControlEvent::UserCreated { username: input.username.clone() });
             (
                 StatusCode::CREATED,
                 "注册成功，请前往邮箱查收 6 位激活验证码",
@@ -190,7 +192,7 @@ pub async fn login(
     }
     let user_result = sqlx::query_as!(
         User,
-        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, is_admin, token_version FROM users WHERE email = $1",
+        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, is_admin, is_superadmin, token_version FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
@@ -249,6 +251,7 @@ pub async fn login(
                     email: user.email.clone(),
                     username: user.username.clone(),
                     is_guest: false,
+                    is_admin: user.is_admin,
                     exp,
                     token_version: user.token_version,
                     jti,
@@ -297,7 +300,7 @@ pub async fn login(
 /// 获取当前登录用户完整资料（页面刷新恢复会话 + 资料字段同步）。
 pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> impl IntoResponse {
     let profile = sqlx::query!(
-        "SELECT display_name, avatar_url, bio, is_admin FROM users WHERE id = $1",
+        "SELECT display_name, avatar_url, bio, is_admin, is_superadmin FROM users WHERE id = $1",
         user.user_id
     )
     .fetch_optional(&state.db)
@@ -311,6 +314,7 @@ pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> 
         email: user.email,
         is_guest: user.is_guest,
         is_admin: profile.as_ref().map(|p| p.is_admin).unwrap_or(false),
+        is_superadmin: profile.as_ref().map(|p| p.is_superadmin).unwrap_or(false),
         display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
         avatar_url: profile.as_ref().and_then(|p| p.avatar_url.clone()),
         bio: profile.as_ref().and_then(|p| p.bio.clone()),
@@ -355,6 +359,7 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                 email: guest_email,
                 username: guest_username.clone(),
                 is_guest: true,
+                is_admin: false,
                 exp,
                 token_version: 1,
                 jti,
@@ -366,6 +371,8 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
 
             match encode(&Header::default(), &my_claims, &encoding_key) {
                 Ok(token) => {
+                    // 通知管理后台实时刷新用户列表
+                    let _ = state.admin_events.send(ControlEvent::UserCreated { username: guest_username.clone() });
                     let response_body = AuthResponse {
                         token,
                         username: guest_username,

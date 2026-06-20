@@ -45,9 +45,6 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
 import { useAppState } from '../../composables/useAppState'
-import { SUPER_ADMIN } from '../../config.js'
 const { username } = useAppState()
-const isSuperAdmin = computed(() => username.value === SUPER_ADMIN)
 </script>

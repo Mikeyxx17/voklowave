@@ -16,12 +16,16 @@ export function useChannels() {
   const fetchChannels = async () => {
     loading.value = true
     try {
-      const { token } = useAppState()
+      const { token, logout } = useAppState()
       const headers = {}
       if (token.value) {
         headers['Authorization'] = `Bearer ${token.value}`
       }
       const res = await fetch('/api/channels', { headers })
+      if (res.status === 401) {
+        logout()
+        return
+      }
       if (res.ok) {
         channels.value = await res.json()
       }
@@ -52,6 +56,11 @@ export function useChannels() {
       body: JSON.stringify({ name }),
     })
 
+    if (res.status === 401) {
+      const { logout } = useAppState()
+      logout()
+      return false
+    }
     if (res.ok) {
       await fetchChannels()
       return true

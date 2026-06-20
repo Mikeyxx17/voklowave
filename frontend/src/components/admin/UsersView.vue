@@ -42,7 +42,7 @@
               </td>
               <td class="text-sm text-base-content/50">{{ fmt(u.created_at) }}</td>
               <td>
-                <button v-if="u.username !== SUPER_ADMIN" @click="delUser(u)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === u.id">
+                <button v-if="isSuperAdmin && !u.is_superadmin" @click="delUser(u)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === u.id">
                   删除
                 </button>
                 <span v-else class="text-xs text-base-content/30">—</span>
@@ -63,14 +63,14 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
 import { useAppState } from '../../composables/useAppState'
-import { SUPER_ADMIN } from '../../config.js'
+import { useAdminEvents } from '../../composables/useAdminEvents'
 
 const { listUsers, deleteUser, toggleAdmin: apiToggleAdmin } = useAdmin()
-const { username } = useAppState()
-const isSuperAdmin = username.value === SUPER_ADMIN
+const { isSuperAdmin } = useAppState()
+const { lastEvent } = useAdminEvents()
 const users = ref([])
 const total = ref(0)
 const page = ref(0)
@@ -79,6 +79,15 @@ const loading = ref(false)
 const error = ref('')
 const deleting = ref(null)
 const toggling = ref(null)
+
+let refreshTimer = null
+watch(lastEvent, (ev) => {
+  if (!ev) return
+  if (ev.type !== 'user_created' && ev.type !== 'user_deleted' && ev.type !== 'user_admin_toggled') return
+  // 管理员 A 的操作 → 管理员 B 自动刷新
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => fetchUsers(), 1000)
+})
 
 const fetchUsers = async () => {
   loading.value = true; error.value = ''
@@ -91,24 +100,24 @@ const fetchUsers = async () => {
 const delUser = async (u) => {
   if (!confirm(`确定删除用户 "${u.username}"？其所有消息将被移除。`)) return
   deleting.value = u.id
-  try { await deleteUser(u.id); fetchUsers() } catch (e) { error.value = e.message } finally { deleting.value = null }
+  try { await deleteUser(u.id); fetchUsers() } catch (e) { error.value = e.message; fetchUsers() } finally { deleting.value = null }
 }
 
 const toggleAdmin = async (u) => {
   const action = u.is_admin ? '撤销管理员权限' : '升级为管理员'
   if (!confirm(`确定要将 "${u.username}" ${action}？`)) return
   toggling.value = u.id
-  try { await apiToggleAdmin(u.id); fetchUsers() } catch (e) { error.value = e.message } finally { toggling.value = null }
+  try { await apiToggleAdmin(u.id); fetchUsers() } catch (e) { error.value = e.message; fetchUsers() } finally { toggling.value = null }
 }
 
 const roleName = (u) => {
-  if (u.username === SUPER_ADMIN) return '超级管理员'
+  if (u.is_superadmin) return '超级管理员'
   if (u.is_admin) return '管理员'
   if (u.is_guest) return '访客'
   return '普通用户'
 }
 const roleBadge = (u) => {
-  if (u.username === SUPER_ADMIN) return 'badge badge-error badge-sm'
+  if (u.is_superadmin) return 'badge badge-error badge-sm'
   if (u.is_admin) return 'badge badge-info badge-sm'
   if (u.is_guest) return 'badge badge-ghost badge-sm'
   return 'badge badge-outline badge-sm'

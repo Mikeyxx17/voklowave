@@ -39,21 +39,33 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
+import { useAdminEvents } from '../../composables/useAdminEvents'
 
 const { dashboard } = useAdmin()
+const { lastEvent } = useAdminEvents()
 const data = ref({})
 const loading = ref(true)
 const error = ref('')
 
-onMounted(async () => {
+let refreshTimer = null
+watch(lastEvent, (ev) => {
+  if (!ev) return
+  if (refreshTimer) clearTimeout(refreshTimer)
+  // 用户/频道/消息变更 → 仪表盘数字实时刷新
+  refreshTimer = setTimeout(() => fetch(), 1000)
+})
+
+const fetch = async () => {
   try {
     data.value = await dashboard()
+    loading.value = false
   } catch (e) {
     error.value = e.message
-  } finally {
     loading.value = false
   }
-})
+}
+
+onMounted(() => fetch())
 </script>

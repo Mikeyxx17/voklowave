@@ -4,7 +4,7 @@ const BASE = '/api/admin'
 
 /** 通用请求封装 */
 async function api(path, options = {}) {
-  const { token } = useAppState()
+  const { token, logout } = useAppState()
   const res = await fetch(`${BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -13,6 +13,10 @@ async function api(path, options = {}) {
     },
     ...options,
   })
+  if (res.status === 401) {
+    logout()
+    throw new Error('登录已过期，请重新登录')
+  }
   const text = await res.text()
   let data = null
   try { data = JSON.parse(text) } catch { data = text }
