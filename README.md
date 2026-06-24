@@ -301,6 +301,64 @@ voklowave/
 
 ## 快速开始
 
+### 部署流程图
+
+从头到尾，一步不漏：
+
+```
+                                    ┌──────────┐
+                                    │  git clone │
+                                    └─────┬─────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 1. 配置 backend/.env   │
+                              │   DATABASE_URL          │
+                              │   JWT_SECRET            │
+                              │   SMTP_*                │
+                              │   ALLOWED_DOMAINS       │
+                              │   SUPER_ADMIN（可选）    │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 2. 创建数据库（一次）    │
+                              │   createdb voklowave..  │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 3. 执行迁移             │
+                              │   cargo sqlx migrate    │
+                              │   run                   │
+                              │   → 建表 + 索引 + 字段  │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 4. 导入种子数据         │
+                              │   psql -f seed.sql      │
+                              │   → 写入超级管理员       │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 5. 启动后端             │
+                              │   cargo run             │
+                              │   → 监听 0.0.0.0:3000  │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 6. 启动前端             │
+                              │   cd frontend           │
+                              │   npm run dev           │
+                              │   → 监听 localhost:5173 │
+                              └───────────┬───────────┘
+                                          │
+                              ┌───────────▼───────────┐
+                              │ 7. 访问                  │
+                              │   登录: SuperAdmin/密码   │
+                              │   聊天: http://...:5173  │
+                              │   后台: http://...:5173  │
+                              │         /#/admin        │
+                              └──────────────────────────┘
+```
+
 ### 前置条件
 
 - [Rust](https://www.rust-lang.org/) (stable，建议通过 [rustup](https://rustup.rs/) 安装)
@@ -308,7 +366,11 @@ voklowave/
 - [PostgreSQL](https://www.postgresql.org/) 16+ 运行中的实例，并安装 `pg_trgm` 扩展
 - 一个 SMTP 邮箱账号（用于发送验证码，推荐 QQ 邮箱或 Gmail）
 
-### 1. 创建 PostgreSQL 数据库
+### 1. 配置 backend/.env
+
+在 `backend/` 目录下创建 `.env` 文件，参考下方 [.env 配置说明](#env-配置说明) 填写各项。
+
+### 2. 创建 PostgreSQL 数据库
 
 ```sql
 CREATE DATABASE voklowave;
@@ -319,17 +381,37 @@ GRANT ALL PRIVILEGES ON DATABASE voklowave TO voklowave_user;
 
 > 确保数据库启用了 `pg_trgm` 扩展。SQLx 迁移会自动处理字符集和索引，无需手动操作。
 
-### 2. 配置并启动后端
+### 3. 执行数据库迁移
 
 ```bash
 cd backend
+cargo sqlx migrate run
+```
 
-# 创建 .env 配置文件（参考下方说明填写各项）
-cp .env.example .env    # 如果没有 example 文件则手动创建
+跑完 15 个迁移文件，建好所有表。
 
-# 编译并启动（首次编译需下载依赖，约 2-5 分钟）
+### 4. 导入种子数据（超级管理员）
+
+```bash
+# 先生成密码哈希
+cargo run --bin hash -- 你的密码
+
+# 编辑 backend/seed.sql，替换邮箱和密码哈希
+
+# 导入
+psql -h localhost -U voklowave_user -d voklowave_database -f backend/seed.sql
+```
+
+### 5. 启动后端
+
+```bash
+cd backend
 cargo run
 ```
+
+首次编译需下载依赖，约 2-5 分钟。启动后自动执行迁移。监听 `0.0.0.0:3000`。
+
+<a id="env-配置说明"></a>
 
 **.env 配置说明**
 
@@ -347,13 +429,14 @@ SMTP_PASSWORD=你的SMTP授权码           # QQ邮箱需开启SMTP后获取授�
 ALLOWED_DOMAINS=qq.com,gmail.com     # 允许注册的邮箱域名（逗号分隔，留空不限制）
 CLEANUP_INTERVAL_SECS=1800           # 访客清理任务间隔（秒），默认 1800（30 分钟）
 GUEST_MAX_AGE_HOURS=24               # 访客账户过期时间（小时），默认 24
+SUPER_ADMIN=SuperAdmin               # 超级管理员用户名（可选，默认 SuperAdmin）
 ```
 
 > **JWT_SECRET**：可以用 `openssl rand -base64 64` 生成一个安全的随机密钥。
 
 > **SMTP 密码**：QQ 邮箱需要在「设置 → 账户 → POP3/SMTP 服务」中开启并获取授权码，不能使用登录密码。Gmail 需使用 App Password。
 
-### 3. 后端启动流程详解
+### 后端启动流程详解
 
 当你执行 `cargo run` 后，后端按以下顺序初始化：
 
@@ -452,7 +535,7 @@ axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
 
 > **注意**：后端进程必须保持运行。关闭终端或 Ctrl+C 会停止服务。生产环境建议配合 systemd 或 Docker 守护进程。
 
-### 4. 配置并启动前端
+### 6. 启动前端
 
 ```bash
 cd frontend
@@ -468,19 +551,37 @@ npm run dev
 
 **代理配置**（`vite.config.js`）：前端请求 `/api/*` 和 `/ws/*` 会自动代理到后端 `http://127.0.0.1:3000`，WebSocket 代理也已启用。无需在前端配置后端地址。
 
-### 5. 首次使用
+### 7. 访问
 
-1. 浏览器打开 `http://localhost:5173`
-2. 注册一个账号（需要能收到验证码的邮箱），提交验证码激活
-3. 第一个注册的用户默认**不是**管理员。需要手动在数据库中设置 SuperAdmin：
+| 页面 | 地址 |
+|------|------|
+| 登录 | `http://localhost:5173/#/login` |
+| 聊天 | `http://localhost:5173/` |
+| 管理后台 | `http://localhost:5173/#/admin` |
 
-```sql
-UPDATE users SET is_admin = true, is_superadmin = true WHERE email = '你的邮箱';
+使用种子数据中的超级管理员账号登录，即可访问管理后台。
+
+### 附加操作
+
+**改密码流程**
+
+```bash
+cd backend
+cargo run --bin hash -- 新密码                          # 拿到哈希
+psql -h localhost -U voklowave_user -d voklowave_database \
+  -c "UPDATE users SET password_hash='<哈希>' WHERE username='SuperAdmin';"
 ```
 
-4. 设置完成后该用户即可访问管理后台 `/#/admin`
+**清空重来**
 
-### 6. 生产部署注意事项
+```bash
+psql -h localhost -U voklowave_user -d voklowave_database \
+  -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+cargo sqlx migrate run
+psql -h localhost -U voklowave_user -d voklowave_database -f backend/seed.sql
+```
+
+### 生产部署注意事项
 
 - 修改 `JWT_SECRET` 为生产环境唯一密钥
 - 前端 `vite.config.js` 中的代理仅用于开发。生产环境需由 nginx / Caddy 反向代理，或由前端构建产物直接指向后端地址
