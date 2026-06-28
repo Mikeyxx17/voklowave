@@ -12,15 +12,24 @@
     <div v-if="loading" class="text-center py-12"><span class="loading loading-spinner loading-lg"></span></div>
     <div v-else-if="error" class="alert alert-error mb-4">{{ error }}</div>
     <template v-else>
+      <!-- 批量操作栏 -->
+      <div v-if="selected.length > 0" class="flex items-center gap-2 mb-3 p-2 bg-base-200/50 rounded-lg">
+        <span class="text-sm font-medium">已选 {{ selected.length }} 人</span>
+        <button v-if="isSuperAdmin" @click="batchDeleteUsers" class="btn btn-error btn-sm">批量删除</button>
+        <button v-if="isSuperAdmin" @click="batchToggleAdmin" class="btn btn-warning btn-sm">批量升降</button>
+        <button @click="selected=[]" class="btn btn-ghost btn-sm">取消选择</button>
+      </div>
       <div class="overflow-x-auto">
         <table class="table table-zebra">
           <thead>
             <tr>
+              <th><input type="checkbox" @change="toggleAllUsers" :checked="allUsersSelected"></th>
               <th>ID</th><th>用户名</th><th>邮箱</th><th>状态</th><th>角色</th><th v-if="isSuperAdmin">升降</th><th>注册时间</th><th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="u in users" :key="u.id">
+            <tr v-for="u in users" :key="u.id" :class="{ 'bg-base-200/30': selected.includes(u.id) }">
+              <td><input type="checkbox" :checked="selected.includes(u.id)" @change="toggleSelectUser(u.id)" :disabled="u.is_owner"></td>
               <td>{{ u.id }}</td>
               <td class="font-medium">
                 {{ u.username }}
@@ -36,16 +45,19 @@
                 <span :class="roleBadge(u)">{{ roleName(u) }}</span>
               </td>
               <td v-if="isSuperAdmin">
-                <span v-if="u.is_guest" class="text-xs text-base-content/30">—</span>
+                <span v-if="u.is_guest || u.is_owner" class="text-xs text-base-content/30">—</span>
                 <input v-else type="checkbox" class="toggle toggle-sm" :checked="u.is_admin"
                   @change="toggleAdmin(u)" :disabled="toggling === u.id" />
               </td>
               <td class="text-sm text-base-content/50">{{ fmt(u.created_at) }}</td>
-              <td>
-                <button v-if="isSuperAdmin && !u.is_superadmin" @click="delUser(u)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === u.id">
+              <td class="flex gap-1">
+                <button v-if="!u.is_owner" @click="doMute(u)" class="btn btn-warning btn-xs btn-outline" :disabled="muting === u.id">
+                  {{ u.muted_until && new Date(u.muted_until) > new Date() ? '解除' : '禁言' }}
+                </button>
+                <button v-if="isSuperAdmin && !u.is_superadmin && !u.is_owner" @click="delUser(u)" class="btn btn-error btn-xs btn-outline" :disabled="deleting === u.id">
                   删除
                 </button>
-                <span v-else class="text-xs text-base-content/30">—</span>
+                <span v-if="u.is_owner" class="text-xs text-base-content/30">—</span>
               </td>
             </tr>
           </tbody>
@@ -63,12 +75,12 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useAdmin } from '../../composables/useAdmin'
 import { useAppState } from '../../composables/useAppState'
 import { useAdminEvents } from '../../composables/useAdminEvents'
 
-const { listUsers, deleteUser, toggleAdmin: apiToggleAdmin } = useAdmin()
+const { listUsers, deleteUser, toggleAdmin: apiToggleAdmin, muteUser: apiMuteUser, batchDeleteUsers: apiBatchDeleteUsers, batchToggleAdmin: apiBatchToggleAdmin } = useAdmin()
 const { isSuperAdmin } = useAppState()
 const { lastEvent } = useAdminEvents()
 const users = ref([])
@@ -79,6 +91,9 @@ const loading = ref(false)
 const error = ref('')
 const deleting = ref(null)
 const toggling = ref(null)
+const muting = ref(null)
+const selected = ref([])
+const batchLoading = ref(false)
 
 let refreshTimer = null
 watch(lastEvent, (ev) => {
@@ -110,13 +125,69 @@ const toggleAdmin = async (u) => {
   try { await apiToggleAdmin(u.id); fetchUsers() } catch (e) { error.value = e.message; fetchUsers() } finally { toggling.value = null }
 }
 
+const allUsersSelected = computed(() => {
+  const selectable = users.value.filter(u => !u.is_owner)
+  return selectable.length > 0 && selectable.every(u => selected.value.includes(u.id))
+})
+
+const toggleSelectUser = (id) => {
+  const idx = selected.value.indexOf(id)
+  if (idx >= 0) selected.value.splice(idx, 1)
+  else selected.value.push(id)
+}
+
+const toggleAllUsers = () => {
+  if (allUsersSelected.value) {
+    selected.value = []
+  } else {
+    selected.value = users.value.filter(u => !u.is_owner).map(u => u.id)
+  }
+}
+
+const batchDeleteUsers = async () => {
+  if (!confirm(`确定批量删除 ${selected.value.length} 个用户？`)) return
+  batchLoading.value = true
+  try {
+    const res = await apiBatchDeleteUsers(selected.value)
+    alert(`已删除 ${res.deleted} 个用户` + (res.skipped_owners ? `，${res.skipped_owners} 个 Owner 被跳过` : ''))
+    selected.value = []
+    fetchUsers()
+  } catch (e) { error.value = e.message } finally { batchLoading.value = false }
+}
+
+const batchToggleAdmin = async () => {
+  if (!confirm(`确定批量升降 ${selected.value.length} 个用户的管理员身份？`)) return
+  batchLoading.value = true
+  try {
+    const res = await apiBatchToggleAdmin(selected.value)
+    alert(`已处理 ${res.toggled} 个用户` + (res.skipped ? `，${res.skipped} 个被跳过` : ''))
+    selected.value = []
+    fetchUsers()
+  } catch (e) { error.value = e.message } finally { batchLoading.value = false }
+}
+
+const doMute = async (u) => {
+  if (u.muted_until && new Date(u.muted_until) > new Date()) {
+    if (!confirm(`确定解除 "${u.username}" 的禁言？`)) return
+    muting.value = u.id
+    try { await apiMuteUser(u.id, null); fetchUsers() } catch (e) { error.value = e.message; fetchUsers() } finally { muting.value = null }
+  } else {
+    const mins = prompt(`禁言 "${u.username}" 多少分钟？`, '10')
+    if (!mins || isNaN(parseInt(mins))) return
+    muting.value = u.id
+    try { await apiMuteUser(u.id, parseInt(mins)); fetchUsers() } catch (e) { error.value = e.message; fetchUsers() } finally { muting.value = null }
+  }
+}
+
 const roleName = (u) => {
+  if (u.is_owner) return 'Owner'
   if (u.is_superadmin) return '超级管理员'
   if (u.is_admin) return '管理员'
   if (u.is_guest) return '访客'
   return '普通用户'
 }
 const roleBadge = (u) => {
+  if (u.is_owner) return 'badge badge-warning badge-sm'
   if (u.is_superadmin) return 'badge badge-error badge-sm'
   if (u.is_admin) return 'badge badge-info badge-sm'
   if (u.is_guest) return 'badge badge-ghost badge-sm'

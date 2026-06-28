@@ -14,6 +14,8 @@ const pendingEmail = ref('')
 const isGuestFlag = ref(false)
 const isAdminFlag = ref(false)
 const isSuperAdminFlag = ref(false)
+const isOwnerFlag = ref(false)
+const mutedUntil = ref(null)
 
 // ── 新增：用户资料字段 ──
 const displayName = ref('')
@@ -25,7 +27,12 @@ const isGuest = computed(() => isGuestFlag.value)
 // 是否为管理员
 const isAdmin = computed(() => isAdminFlag.value)
 // 是否为超级管理员
-const isSuperAdmin = computed(() => isSuperAdminFlag.value)
+const isSuperAdmin = computed(() => isSuperAdminFlag.value || isOwnerFlag.value)
+const isOwner = computed(() => isOwnerFlag.value)
+const isMuted = computed(() => {
+  if (!mutedUntil.value) return false
+  return new Date(mutedUntil.value) > new Date()
+})
 
 // 主题变更 → localStorage + <html data-theme>
 watch(theme, (val) => {
@@ -80,6 +87,8 @@ const initAuth = async () => {
         isGuestFlag.value = data.is_guest || false
         isAdminFlag.value = data.is_admin || false
         isSuperAdminFlag.value = data.is_superadmin || false
+        isOwnerFlag.value = data.is_owner || false
+        mutedUntil.value = data.muted_until || null
         // ── 新增：从服务器恢复资料字段，服务端数据优先 ──
         if (data.display_name) displayName.value = data.display_name
         if (data.avatar_url) avatarUrl.value = data.avatar_url
@@ -159,6 +168,8 @@ export function useAppState() {
         if (data.avatar_url) avatarUrl.value = data.avatar_url
         isAdminFlag.value = data.is_admin || false
         isSuperAdminFlag.value = data.is_superadmin || false
+        isOwnerFlag.value = data.is_owner || false
+        mutedUntil.value = data.muted_until || null
         isJoined.value = true
         requestNotify()
         window.location.hash = '/'
@@ -264,6 +275,8 @@ export function useAppState() {
     isGuestFlag.value = false
     isAdminFlag.value = false
     isSuperAdminFlag.value = false
+    isOwnerFlag.value = false
+    mutedUntil.value = null
     isJoined.value = false
     displayName.value = ''      // 新增
     avatarUrl.value = ''        // 新增
@@ -374,6 +387,9 @@ export function useAppState() {
     bio,
     isAdmin,
     isSuperAdmin,
+    isOwner,
+    isMuted,
+    mutedUntil,
     mode,
     register,
     login,

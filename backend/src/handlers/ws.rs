@@ -220,6 +220,30 @@ async fn handle_socket(socket: WebSocket, state: AppState, channel_name: String,
 
                             match serde_json::from_str::<ChatMessage>(&text) {
                                 Ok(mut parsed_msg) => {
+                                    // ── 禁言检查 ──
+                                    let muted = sqlx::query_scalar!(
+                                        "SELECT muted_until FROM users WHERE id = $1",
+                                        user.user_id
+                                    )
+                                    .fetch_optional(&state.db)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .flatten();
+
+                                    if let Some(until) = muted {
+                                        if until > chrono::Utc::now() {
+                                            let remaining = (until - chrono::Utc::now()).num_minutes();
+                                            let msg = serde_json::json!({
+                                                "type": "muted",
+                                                "until": until,
+                                                "remaining_minutes": remaining.max(1)
+                                            });
+                                            let _ = sender.send(Message::Text(msg.to_string().into())).await;
+                                            continue;
+                                        }
+                                    }
+
                                     parsed_msg.channel = channel_name.clone();
                                     parsed_msg.username = user.username.clone();
                                     // ── 查用户资料，消息带上当前昵称和头像 ──

@@ -29,10 +29,7 @@ pub async fn spawn_cleanup_task(
     interval_secs: u64,
     max_age_hours: u64,
 ) {
-    info!(
-        interval_secs,
-        "后台清理任务已启动"
-    );
+    info!(interval_secs, "后台清理任务已启动");
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -72,7 +69,6 @@ pub async fn spawn_cleanup_task(
             };
 
             let max_hours = max_age_hours as i64;
-
             let msg_result = sqlx::query!(
                 "DELETE FROM messages USING users \
                 WHERE messages.username = users.username \
@@ -106,25 +102,17 @@ pub async fn spawn_cleanup_task(
                         // ── 步骤 3：事务提交成功后，广播删除事件给在线客户端 ──
                         for msg in &doomed {
                             if let Some(tx) = control_channels.get(&msg.channel) {
-                                let _ = tx.send(ControlEvent::MessageDeleted {
-                                    message_id: msg.id,
-                                });
+                                let _ =
+                                    tx.send(ControlEvent::MessageDeleted { message_id: msg.id });
                             }
                         }
                         if !doomed.is_empty() {
-                            info!(
-                                count = doomed.len(),
-                                "已向在线客户端广播访客消息删除事件"
-                            );
+                            info!(count = doomed.len(), "已向在线客户端广播访客消息删除事件");
                         }
                     }
                 }
                 (err_msg, err_user) => {
-                    error!(
-                        ?err_msg,
-                        ?err_user,
-                        "访客清理出错，事务已回滚"
-                    );
+                    error!(?err_msg, ?err_user, "访客清理出错，事务已回滚");
                 }
             }
 
@@ -138,11 +126,9 @@ pub async fn spawn_cleanup_task(
 /// 墓碑仅用于重连客户端同步删除事件，离线超过 1 小时的客户端重连时
 /// 回放的 50 条历史消息已不包含被删消息，墓碑无保留价值。
 async fn cleanup_tombstones(pool: &PgPool) {
-    match sqlx::query!(
-        "DELETE FROM deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour'"
-    )
-    .execute(pool)
-    .await
+    match sqlx::query!("DELETE FROM deleted_messages WHERE deleted_at < NOW() - INTERVAL '1 hour'")
+        .execute(pool)
+        .await
     {
         Ok(result) => {
             let rows = result.rows_affected();

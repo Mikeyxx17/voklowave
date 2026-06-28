@@ -46,7 +46,7 @@ impl FromRequestParts<AppState> for AdminUser {
         )
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-        if token_data.claims.is_admin {
+        if token_data.claims.is_admin || token_data.claims.is_owner {
             return Ok(AdminUser(user));
         }
 
@@ -87,17 +87,19 @@ impl FromRequestParts<AppState> for SuperAdminUser {
     ) -> Result<Self, Self::Rejection> {
         let admin = AdminUser::from_request_parts(parts, state).await?;
 
-        let is_superadmin = sqlx::query_scalar!(
-            "SELECT is_superadmin FROM users WHERE id = $1",
+        // is_owner 自动拥有超级管理员权限
+        let row = sqlx::query!(
+            "SELECT is_superadmin, is_owner FROM users WHERE id = $1",
             admin.0.user_id
         )
         .fetch_optional(&state.db)
         .await
         .ok()
-        .flatten()
-        .unwrap_or(false);
+        .flatten();
 
-        if is_superadmin {
+        let is_elevated = row.is_some_and(|r| r.is_superadmin || r.is_owner);
+
+        if is_elevated {
             Ok(SuperAdminUser(admin.0))
         } else {
             warn!(

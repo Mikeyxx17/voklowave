@@ -30,10 +30,14 @@ export function useAdmin() {
     listUsers:  (q = '', page = 0)    => api(`/users?q=${encodeURIComponent(q)}&page=${page}`),
     deleteUser: (id)                  => api(`/users/${id}`, { method: 'DELETE' }),
     toggleAdmin:(id)                  => api(`/users/${id}/toggle-admin`, { method: 'PATCH' }),
+    muteUser:  (id, mins = null)      => api(`/users/${id}/mute`, { method: 'PATCH', body: JSON.stringify({ duration_minutes: mins }) }),
     listChannels:()                   => api('/channels'),
     deleteChannel:(id)                => api(`/channels/${id}`, { method: 'DELETE' }),
     auditMessages:(q = '', page = 0)  => api(`/messages?q=${encodeURIComponent(q)}&page=${page}`),
     deleteMessage:(id)                => api(`/messages/${id}`, { method: 'DELETE' }),
+    batchDeleteMessages:(ids)         => api('/messages/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+    batchDeleteUsers:(ids)            => api('/users/batch-delete', { method: 'POST', body: JSON.stringify({ ids }) }),
+    batchToggleAdmin:(ids)            => api('/users/batch-toggle-admin', { method: 'POST', body: JSON.stringify({ ids }) }),
     auditLogs:   (page = 0)           => api(`/audit-logs?page=${page}`),
   }
 }

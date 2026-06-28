@@ -38,7 +38,7 @@ pub async fn list_users(
 
     let pattern = format!("%{}%", keyword);
     let rows = sqlx::query!(
-        "SELECT username, display_name FROM users WHERE username ILIKE $1 OR display_name ILIKE $1 LIMIT 10",
+        "SELECT id, username, display_name FROM users WHERE username ILIKE $1 OR display_name ILIKE $1 LIMIT 10",
         pattern
     )
     .fetch_all(&state.db)
@@ -49,6 +49,7 @@ pub async fn list_users(
             let results: Vec<serde_json::Value> = users
                 .into_iter()
                 .map(|r| serde_json::json!({
+                    "id": r.id,
                     "username": r.username,
                     "display_name": r.display_name,
                 }))

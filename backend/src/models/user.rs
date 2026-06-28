@@ -24,7 +24,9 @@ pub struct User {
     pub is_verified: bool,
     pub is_admin: bool,
     pub is_superadmin: bool,
+    pub is_owner: bool,
     pub token_version: i32,
+    pub muted_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 登录请求体。
@@ -43,6 +45,7 @@ pub struct AuthResponse {
     pub avatar_url: Option<String>,
     pub is_guest: bool,
     pub is_admin: bool,
+    pub is_owner: bool,
 }
 
 /// `GET /api/me` 响应：当前用户完整资料。
@@ -54,6 +57,8 @@ pub struct MeResponse {
     pub is_guest: bool,
     pub is_admin: bool,
     pub is_superadmin: bool,
+    pub is_owner: bool,
+    pub muted_until: Option<chrono::DateTime<chrono::Utc>>,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub bio: Option<String>,

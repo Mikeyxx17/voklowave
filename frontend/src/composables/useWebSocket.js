@@ -102,6 +102,21 @@ const connect = () => {
         logout()
         return
       }
+      // ── 新增：禁言通知 ──
+      if (msg.type === 'muted') {
+        const { mutedUntil } = useAppState()
+        mutedUntil.value = msg.until
+        return
+      }
+      // ── 新增：频道被管理员删除 → 自动跳转到 general ──
+      if (msg.type === 'channel_deleted') {
+        const { currentChannel, switchChannel } = useAppState()
+        if (msg.name === currentChannel.value) {
+          switchChannel('general')
+        }
+        fetchChannels()
+        return
+      }
       // ── 新增：表情回应事件 ──
       if (msg.type === 'reaction_toggled') {
         const { message_id, emoji, action, username } = msg

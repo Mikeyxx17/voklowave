@@ -50,6 +50,7 @@ pub enum ControlEvent {
 pub struct AppState {
     pub db: PgPool,
     pub channels: Arc<DashMap<String, broadcast::Sender<ChatMessage>>>,
+    pub dm_channels: Arc<DashMap<i32, broadcast::Sender<serde_json::Value>>>,
     pub control_channels: Arc<DashMap<String, broadcast::Sender<ControlEvent>>>,
     /// 全局管理后台事件通道（消息创建/删除等，推送给 admin 页面实时刷新）
     pub admin_events: broadcast::Sender<ControlEvent>,

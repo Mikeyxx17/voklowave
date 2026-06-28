@@ -11,23 +11,21 @@ mod state;
 
 use axum::{
     Router,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
 };
 use dashmap::DashMap;
 use dotenvy::dotenv;
 use handlers::{
-    admin_audit_logs, admin_audit_messages, admin_dashboard, admin_delete_channel,
-    admin_delete_user, admin_force_delete_message, admin_list_channels, admin_list_users,
-    admin_toggle_admin,
-    admin_ws_handler,
-    create_channel, delete_message, forgot_password, get_channels, get_current_user, guest_login,
-    login, list_sessions, register, resend_verification, reset_password, revoke_session,
-    search_messages, toggle_reaction, list_users, update_profile, verify_email, ws_handler,
+    admin_ws_handler, create_channel, delete_message, dm_list, dm_messages,
+    dm_start, dm_ws_handler, forgot_password,
+    get_channels, get_current_user, guest_login, list_sessions, list_users, login, register,
+    resend_verification, reset_password, revoke_session, search_messages, toggle_reaction,
+    update_profile, verify_email, ws_handler,
 };
 use sqlx::postgres::PgPoolOptions;
 use state::AppState;
 use std::env;
-use std::net::SocketAddr;  // 新增：用于 ConnectInfo
+use std::net::SocketAddr; // 新增：用于 ConnectInfo
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
@@ -65,6 +63,7 @@ async fn main() {
 
     // ── 初始化：聊天频道 + 控制事件频道 + 管理后台全局事件通道 ──
     let channels = Arc::new(DashMap::new());
+    let dm_channels: Arc<DashMap<i32, tokio::sync::broadcast::Sender<serde_json::Value>>> = Arc::new(DashMap::new());
     let control_channels = Arc::new(DashMap::new());
     let (admin_events_tx, _) = broadcast::channel(256);
     let (global_events_tx, _) = broadcast::channel(256);
@@ -72,6 +71,7 @@ async fn main() {
     let state = AppState {
         db: pool.clone(),
         channels,
+        dm_channels,
         control_channels,
         admin_events: admin_events_tx,
         global_events: global_events_tx,
@@ -98,7 +98,7 @@ async fn main() {
     // ── 启动后台清理任务（移到 state 构建之后，以便传入 control_channels 做删除广播） ──
     tokio::spawn(services::cleanup::spawn_cleanup_task(
         pool.clone(),
-        state.control_channels.clone(),  // 新增：传入控制通道，清理时通知在线客户端
+        state.control_channels.clone(), // 新增：传入控制通道，清理时通知在线客户端
         cleanup_interval,
         max_age_hours,
     ));
@@ -122,7 +122,7 @@ async fn main() {
         .route("/api/forgot_password", post(forgot_password))
         .route("/api/reset_password", post(reset_password))
         // ── 用户资料：GET 获取当前信息，PATCH 更新资料 ──
-        .route("/api/users", get(list_users))  // 新增：@ 提及用户搜索
+        .route("/api/users", get(list_users)) // 新增：@ 提及用户搜索
         .route("/api/me", get(get_current_user).patch(update_profile))
         // ── 消息删除：DELETE 硬删除自己的消息 ──
         .route("/api/messages/{id}", delete(delete_message))
@@ -133,16 +133,13 @@ async fn main() {
         // ── 会话管理：列表 & 踢出 ──
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{id}", delete(revoke_session))
+        // ── 私聊 ──
+        .route("/api/dm/start", post(dm_start))
+        .route("/api/dm/list", get(dm_list))
+        .route("/api/dm/{id}/messages", get(dm_messages))
+        .route("/ws/dm/{id}", get(dm_ws_handler))
         // ── 管理员后台 ──
-        .route("/api/admin/dashboard", get(admin_dashboard))
-        .route("/api/admin/users", get(admin_list_users))
-        .route("/api/admin/users/{id}", delete(admin_delete_user))
-        .route("/api/admin/users/{id}/toggle-admin", patch(admin_toggle_admin))
-        .route("/api/admin/channels", get(admin_list_channels))
-        .route("/api/admin/channels/{id}", delete(admin_delete_channel))
-        .route("/api/admin/messages", get(admin_audit_messages))
-        .route("/api/admin/messages/{id}", delete(admin_force_delete_message))
-        .route("/api/admin/audit-logs", get(admin_audit_logs))
+        .nest("/api/admin", handlers::admin::router(state.clone()))
         .layer(cors)
         .with_state(state);
 
@@ -150,5 +147,10 @@ async fn main() {
 
     info!("后端引擎已就绪：http://{}", listener.local_addr().unwrap());
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

@@ -192,7 +192,7 @@ pub async fn login(
     }
     let user_result = sqlx::query_as!(
         User,
-        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, is_admin, is_superadmin, token_version FROM users WHERE email = $1",
+        "SELECT id, email, password_hash, username, display_name, avatar_url, bio, is_guest, created_at, is_verified, is_admin, is_superadmin, is_owner, token_version, muted_until FROM users WHERE email = $1",
         input.email
     )
     .fetch_optional(&state.db)
@@ -252,6 +252,7 @@ pub async fn login(
                     username: user.username.clone(),
                     is_guest: false,
                     is_admin: user.is_admin,
+                    is_owner: user.is_owner,
                     exp,
                     token_version: user.token_version,
                     jti,
@@ -277,6 +278,7 @@ pub async fn login(
                     avatar_url: user.avatar_url,
                     is_guest: false,
                     is_admin: user.is_admin,
+                    is_owner: user.is_owner,
                 };
 
                 info!(
@@ -300,7 +302,7 @@ pub async fn login(
 /// 获取当前登录用户完整资料（页面刷新恢复会话 + 资料字段同步）。
 pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> impl IntoResponse {
     let profile = sqlx::query!(
-        "SELECT display_name, avatar_url, bio, is_admin, is_superadmin FROM users WHERE id = $1",
+        "SELECT display_name, avatar_url, bio, is_admin, is_superadmin, is_owner, muted_until FROM users WHERE id = $1",
         user.user_id
     )
     .fetch_optional(&state.db)
@@ -315,6 +317,8 @@ pub async fn get_current_user(State(state): State<AppState>, user: AuthUser) -> 
         is_guest: user.is_guest,
         is_admin: profile.as_ref().map(|p| p.is_admin).unwrap_or(false),
         is_superadmin: profile.as_ref().map(|p| p.is_superadmin).unwrap_or(false),
+        is_owner: profile.as_ref().map(|p| p.is_owner).unwrap_or(false),
+        muted_until: profile.as_ref().and_then(|p| p.muted_until),
         display_name: profile.as_ref().and_then(|p| p.display_name.clone()),
         avatar_url: profile.as_ref().and_then(|p| p.avatar_url.clone()),
         bio: profile.as_ref().and_then(|p| p.bio.clone()),
@@ -360,6 +364,7 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                 username: guest_username.clone(),
                 is_guest: true,
                 is_admin: false,
+                is_owner: false,
                 exp,
                 token_version: 1,
                 jti,
@@ -380,6 +385,7 @@ pub async fn guest_login(State(state): State<AppState>) -> impl IntoResponse {
                         avatar_url: None,
                         is_guest: true,
                         is_admin: false,
+                        is_owner: false,
                     };
                     (StatusCode::OK, Json(response_body)).into_response()
                 }
